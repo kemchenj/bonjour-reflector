@@ -1,5 +1,9 @@
 # This is a test config file used by config_test.go
 net_interface = "test0"
+interfaces = [
+  { name = "test0", pool = 45 },
+  { name = "test1", pool = 46 },
+]
 
 [devices]
 

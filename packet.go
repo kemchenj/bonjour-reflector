@@ -99,7 +99,9 @@ type packetWriter interface {
 }
 
 func sendBonjourPacket(handle packetWriter, bonjourPacket *bonjourPacket, tag uint16, brMACAddress net.HardwareAddr) {
-	*bonjourPacket.vlanTag = tag
+	if bonjourPacket.vlanTag != nil {
+		*bonjourPacket.vlanTag = tag
+	}
 	*bonjourPacket.srcMAC = brMACAddress
 
 	// Network devices may set dstMAC to the local MAC address

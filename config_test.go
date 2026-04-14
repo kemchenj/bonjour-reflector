@@ -19,7 +19,11 @@ func TestReadConfig(t *testing.T) {
 	computedCfg, err := readConfig(validTestConfigFile)
 	expectedCfg := brconfig{
 		NetInterface: "test0",
-		Devices:      devices,
+		Interfaces: []brInterface{
+			{Name: "test0", Pool: 45},
+			{Name: "test1", Pool: 46},
+		},
+		Devices: devices,
 	}
 
 	if err != nil {
@@ -58,5 +62,31 @@ func TestMapByPool(t *testing.T) {
 	}
 	if !reflect.DeepEqual(computedResult, expectedResult) {
 		t.Error("Error in mapByPool()")
+	}
+}
+
+func TestBuildMirrorPeers(t *testing.T) {
+	peers := buildMirrorPeers([][]uint16{{1, 10}, {100, 200, 300}})
+	for _, slice := range peers {
+		sort.Slice(slice, func(i, j int) bool { return slice[i] < slice[j] })
+	}
+	expected := map[uint16][]uint16{
+		1:   {10},
+		10:  {1},
+		100: {200, 300},
+		200: {100, 300},
+		300: {100, 200},
+	}
+	if !reflect.DeepEqual(peers, expected) {
+		t.Errorf("buildMirrorPeers() = %#v, want %#v", peers, expected)
+	}
+}
+
+func TestMergeDedupeUint16(t *testing.T) {
+	got := mergeDedupeUint16([]uint16{1, 2, 3}, []uint16{2, 4})
+	sort.Slice(got, func(i, j int) bool { return got[i] < got[j] })
+	want := []uint16{1, 2, 3, 4}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("mergeDedupeUint16() = %v, want %v", got, want)
 	}
 }

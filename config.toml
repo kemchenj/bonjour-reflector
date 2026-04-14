@@ -1,5 +1,15 @@
 net_interface = "wls1" # Put here the network interface you want to use.
 
+# Optional (recommended for multi-NIC setups): map each interface to a pool.
+# When this is set, forwarding uses the packet ingress interface/pool instead of VLAN tags.
+# interfaces = [
+#   { name = "en7", pool = 1 },
+#   { name = "en0", pool = 10 },
+# ]
+#
+# Optional: bidirectional mDNS mirror between every VLAN in each group (any MAC).
+# mirror_groups = [ [1, 10] ]
+
 [devices]
 
     [devices."AA:BB:CC:DD:EE:FF"]    # A shared bonjour device
