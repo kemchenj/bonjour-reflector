@@ -37,7 +37,11 @@ func parsePacketsLazily(source *gopacket.PacketSource) chan bonjourPacket {
 			// Get UDP payload
 			payload := parseUDPLayer(packet)
 
-			isDNSQuery := parseDNSPayload(payload)
+			isDNSQuery, ok := parseDNSPayload(payload)
+			if !ok {
+				// Ignore malformed or non-DNS UDP payloads to avoid misrouting.
+				continue
+			}
 
 			// Pass on the packet for its next adventure
 			packetChan <- bonjourPacket{
@@ -86,10 +90,11 @@ func parseUDPLayer(packet gopacket.Packet) (payload []byte) {
 	return
 }
 
-func parseDNSPayload(payload []byte) (isDNSQuery bool) {
+func parseDNSPayload(payload []byte) (isDNSQuery bool, ok bool) {
 	packet := gopacket.NewPacket(payload, layers.LayerTypeDNS, gopacket.Default)
 	if parsedDNS := packet.Layer(layers.LayerTypeDNS); parsedDNS != nil {
 		isDNSQuery = !parsedDNS.(*layers.DNS).QR
+		ok = true
 	}
 	return
 }

@@ -185,8 +185,8 @@ func TestParseDNSPayload(t *testing.T) {
 	questionPacketPayload := parseUDPLayer(questionPacket)
 
 	questionExpectedResult := true
-	questionComputedResult := parseDNSPayload(questionPacketPayload)
-	if !reflect.DeepEqual(questionExpectedResult, questionComputedResult) {
+	questionComputedResult, questionOK := parseDNSPayload(questionPacketPayload)
+	if !reflect.DeepEqual(questionExpectedResult, questionComputedResult) || !questionOK {
 		t.Error("Error in parseDNSPayload() for DNS queries")
 	}
 
@@ -195,9 +195,19 @@ func TestParseDNSPayload(t *testing.T) {
 	answerPacketPayload := parseUDPLayer(answerPacket)
 
 	answerExpectedResult := false
-	answerComputedResult := parseDNSPayload(answerPacketPayload)
-	if !reflect.DeepEqual(answerExpectedResult, answerComputedResult) {
+	answerComputedResult, answerOK := parseDNSPayload(answerPacketPayload)
+	if !reflect.DeepEqual(answerExpectedResult, answerComputedResult) || !answerOK {
 		t.Error("Error in parseDNSPayload() for DNS answers")
+	}
+}
+
+func TestParseDNSPayloadMalformed(t *testing.T) {
+	computedResult, ok := parseDNSPayload([]byte{0x01, 0x02, 0x03})
+	if ok {
+		t.Error("Error in parseDNSPayload() for malformed payload: expected parse failure")
+	}
+	if computedResult {
+		t.Error("Error in parseDNSPayload() for malformed payload: expected false query flag")
 	}
 }
 

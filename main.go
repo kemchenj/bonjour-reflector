@@ -109,6 +109,9 @@ func runWithMappedInterfaces(cfg brconfig, poolsMap, mirrorPeers map[uint16][]ui
 		if err != nil {
 			log.Fatalf("Could not apply filter on network interface %v: %v", configuredInterface.Name, err)
 		}
+		if _, exists := interfacesByPool[configuredInterface.Pool]; exists {
+			log.Fatalf("Duplicate pool %d in interfaces config; each pool must map to exactly one interface", configuredInterface.Pool)
+		}
 		interfacesByPool[configuredInterface.Pool] = egressInterface{
 			handle: handle,
 			mac:    intf.HardwareAddr,
