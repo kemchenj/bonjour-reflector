@@ -70,7 +70,7 @@ func runWithTaggedInterface(cfg brconfig, poolsMap, mirrorPeers map[uint16][]uin
 	brMACAddress := intf.HardwareAddr
 
 	// Filter tagged bonjour traffic
-	filterTemplate := "not (ether src %s) and vlan and dst net (224.0.0.251 or ff02::fb) and udp dst port 5353"
+	filterTemplate := "not (ether src %s) and vlan and udp dst port 5353"
 	err = rawTraffic.SetBPFFilter(fmt.Sprintf(filterTemplate, brMACAddress))
 	if err != nil {
 		log.Fatalf("Could not apply filter on network interface: %v", err)
@@ -94,7 +94,7 @@ func runWithTaggedInterface(cfg brconfig, poolsMap, mirrorPeers map[uint16][]uin
 func runWithMappedInterfaces(cfg brconfig, poolsMap, mirrorPeers map[uint16][]uint16) {
 	interfacesByPool := make(map[uint16]egressInterface)
 	ingress := make(chan ingressPacket, 100)
-	filterTemplate := "not (ether src %s) and dst net (224.0.0.251 or ff02::fb) and udp dst port 5353"
+	filterTemplate := "not (ether src %s) and udp dst port 5353"
 
 	for _, configuredInterface := range cfg.Interfaces {
 		handle, err := pcap.OpenLive(configuredInterface.Name, 65536, true, time.Second)
