@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof"
+	"strings"
 	"time"
 
 	"github.com/google/gopacket"
@@ -25,11 +26,30 @@ type egressInterface struct {
 
 const mdnsMulticastFilter = "udp dst port 5353 and (ether dst 01:00:5e:00:00:fb or ether dst 33:33:00:00:00:fb)"
 
-func buildMDNSBPFFilter(localMAC net.HardwareAddr, requireVLAN bool) string {
-	if requireVLAN {
-		return fmt.Sprintf("not (ether src %s) and vlan and %s", localMAC, mdnsMulticastFilter)
+func buildMDNSBPFFilter(localMACs []net.HardwareAddr, requireVLAN bool) string {
+	parts := []string{}
+	if localMACFilter := buildLocalMACFilter(localMACs); localMACFilter != "" {
+		parts = append(parts, localMACFilter)
 	}
-	return fmt.Sprintf("not (ether src %s) and %s", localMAC, mdnsMulticastFilter)
+	if requireVLAN {
+		parts = append(parts, "vlan")
+	}
+	parts = append(parts, mdnsMulticastFilter)
+	return strings.Join(parts, " and ")
+}
+
+func buildLocalMACFilter(localMACs []net.HardwareAddr) string {
+	srcFilters := []string{}
+	for _, localMAC := range localMACs {
+		if len(localMAC) == 0 {
+			continue
+		}
+		srcFilters = append(srcFilters, fmt.Sprintf("ether src %s", localMAC))
+	}
+	if len(srcFilters) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("not (%s)", strings.Join(srcFilters, " or "))
 }
 
 func main() {
@@ -79,7 +99,7 @@ func runWithTaggedInterface(cfg brconfig, poolsMap, mirrorPeers map[uint16][]uin
 	brMACAddress := intf.HardwareAddr
 
 	// Filter tagged bonjour traffic
-	err = rawTraffic.SetBPFFilter(buildMDNSBPFFilter(brMACAddress, true))
+	err = rawTraffic.SetBPFFilter(buildMDNSBPFFilter([]net.HardwareAddr{brMACAddress}, true))
 	if err != nil {
 		log.Fatalf("Could not apply filter on network interface: %v", err)
 	}
@@ -101,18 +121,27 @@ func runWithTaggedInterface(cfg brconfig, poolsMap, mirrorPeers map[uint16][]uin
 
 func runWithMappedInterfaces(cfg brconfig, poolsMap, mirrorPeers map[uint16][]uint16) {
 	interfacesByPool := make(map[uint16]egressInterface)
+	interfaceMACs := make(map[string]net.HardwareAddr)
+	localMACs := []net.HardwareAddr{}
 	ingress := make(chan ingressPacket, 100)
+
+	for _, configuredInterface := range cfg.Interfaces {
+		intf, err := net.InterfaceByName(configuredInterface.Name)
+		if err != nil {
+			log.Fatalf("Could not get interface details %v: %v", configuredInterface.Name, err)
+		}
+		interfaceMACs[configuredInterface.Name] = intf.HardwareAddr
+		localMACs = append(localMACs, intf.HardwareAddr)
+	}
+
+	filter := buildMDNSBPFFilter(localMACs, false)
 
 	for _, configuredInterface := range cfg.Interfaces {
 		handle, err := pcap.OpenLive(configuredInterface.Name, 65536, true, time.Second)
 		if err != nil {
 			log.Fatalf("Could not find network interface: %v", configuredInterface.Name)
 		}
-		intf, err := net.InterfaceByName(configuredInterface.Name)
-		if err != nil {
-			log.Fatalf("Could not get interface details %v: %v", configuredInterface.Name, err)
-		}
-		err = handle.SetBPFFilter(buildMDNSBPFFilter(intf.HardwareAddr, false))
+		err = handle.SetBPFFilter(filter)
 		if err != nil {
 			log.Fatalf("Could not apply filter on network interface %v: %v", configuredInterface.Name, err)
 		}
@@ -121,7 +150,7 @@ func runWithMappedInterfaces(cfg brconfig, poolsMap, mirrorPeers map[uint16][]ui
 		}
 		interfacesByPool[configuredInterface.Pool] = egressInterface{
 			handle: handle,
-			mac:    intf.HardwareAddr,
+			mac:    interfaceMACs[configuredInterface.Name],
 		}
 
 		decoder := gopacket.DecodersByLayerName["Ethernet"]
