@@ -23,6 +23,15 @@ type egressInterface struct {
 	mac    net.HardwareAddr
 }
 
+const mdnsMulticastFilter = "udp dst port 5353 and (ether dst 01:00:5e:00:00:fb or ether dst 33:33:00:00:00:fb)"
+
+func buildMDNSBPFFilter(localMAC net.HardwareAddr, requireVLAN bool) string {
+	if requireVLAN {
+		return fmt.Sprintf("not (ether src %s) and vlan and %s", localMAC, mdnsMulticastFilter)
+	}
+	return fmt.Sprintf("not (ether src %s) and %s", localMAC, mdnsMulticastFilter)
+}
+
 func main() {
 	// Read config file and generate mDNS forwarding maps
 	configPath := flag.String("config", "", "Config file in TOML format")
@@ -70,8 +79,7 @@ func runWithTaggedInterface(cfg brconfig, poolsMap, mirrorPeers map[uint16][]uin
 	brMACAddress := intf.HardwareAddr
 
 	// Filter tagged bonjour traffic
-	filterTemplate := "not (ether src %s) and vlan and udp dst port 5353"
-	err = rawTraffic.SetBPFFilter(fmt.Sprintf(filterTemplate, brMACAddress))
+	err = rawTraffic.SetBPFFilter(buildMDNSBPFFilter(brMACAddress, true))
 	if err != nil {
 		log.Fatalf("Could not apply filter on network interface: %v", err)
 	}
@@ -94,7 +102,6 @@ func runWithTaggedInterface(cfg brconfig, poolsMap, mirrorPeers map[uint16][]uin
 func runWithMappedInterfaces(cfg brconfig, poolsMap, mirrorPeers map[uint16][]uint16) {
 	interfacesByPool := make(map[uint16]egressInterface)
 	ingress := make(chan ingressPacket, 100)
-	filterTemplate := "not (ether src %s) and udp dst port 5353"
 
 	for _, configuredInterface := range cfg.Interfaces {
 		handle, err := pcap.OpenLive(configuredInterface.Name, 65536, true, time.Second)
@@ -105,7 +112,7 @@ func runWithMappedInterfaces(cfg brconfig, poolsMap, mirrorPeers map[uint16][]ui
 		if err != nil {
 			log.Fatalf("Could not get interface details %v: %v", configuredInterface.Name, err)
 		}
-		err = handle.SetBPFFilter(fmt.Sprintf(filterTemplate, intf.HardwareAddr))
+		err = handle.SetBPFFilter(buildMDNSBPFFilter(intf.HardwareAddr, false))
 		if err != nil {
 			log.Fatalf("Could not apply filter on network interface %v: %v", configuredInterface.Name, err)
 		}
