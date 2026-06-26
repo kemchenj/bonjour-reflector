@@ -24,7 +24,7 @@ type egressInterface struct {
 	mac    net.HardwareAddr
 }
 
-const mdnsMulticastFilter = "udp dst port 5353 and (ether dst 01:00:5e:00:00:fb or ether dst 33:33:00:00:00:fb)"
+const mdnsTrafficFilter = "udp dst port 5353"
 
 func buildMDNSBPFFilter(localMACs []net.HardwareAddr, requireVLAN bool) string {
 	parts := []string{}
@@ -34,7 +34,7 @@ func buildMDNSBPFFilter(localMACs []net.HardwareAddr, requireVLAN bool) string {
 	if requireVLAN {
 		parts = append(parts, "vlan")
 	}
-	parts = append(parts, mdnsMulticastFilter)
+	parts = append(parts, mdnsTrafficFilter)
 	return strings.Join(parts, " and ")
 }
 
