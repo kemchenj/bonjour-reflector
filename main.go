@@ -111,7 +111,6 @@ func runWithTaggedInterface(cfg brconfig, poolsMap, mirrorPeers map[uint16][]uin
 
 	// Process Bonjours packets
 	for bonjourPacket := range bonjourPackets {
-		fmt.Println(bonjourPacket.packet.String())
 		if bonjourPacket.vlanTag == nil {
 			continue
 		}
@@ -164,7 +163,6 @@ func runWithMappedInterfaces(cfg brconfig, poolsMap, mirrorPeers map[uint16][]ui
 	}
 
 	for incoming := range ingress {
-		fmt.Println(incoming.packet.packet.String())
 		processPacketWithPoolMap(cfg, poolsMap, mirrorPeers, incoming.pool, interfacesByPool, &incoming.packet)
 	}
 }
