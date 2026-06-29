@@ -3,10 +3,12 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
+	"os"
 	"strings"
 	"time"
 
@@ -57,7 +59,11 @@ func main() {
 	configPath := flag.String("config", "", "Config file in TOML format")
 	debug := flag.Bool("debug", false, "Enable pprof server on /debug/pprof/")
 	mdnsDebug := flag.Bool("mdns-debug", false, "Enable aggregated mDNS receive and forwarding diagnostics")
+	runDuration := flag.Duration("run-duration", 0, "Run for this duration before flushing logs and exiting; 0 means run until stopped")
+	logFilePath := flag.String("log-file", "", "Write logs to this file in addition to stderr, overwriting existing contents")
 	flag.Parse()
+
+	logFile := configureLogFile(*logFilePath)
 
 	// Start debug server
 	if *debug {
@@ -71,12 +77,48 @@ func main() {
 	poolsMap := mapByPool(cfg.Devices)
 	mirrorPeers := buildMirrorPeers(cfg.MirrorGroups)
 	mdnsEvents := startMDNSSummaryLogger(30*time.Second, *mdnsDebug)
+	scheduleTimedExit(*runDuration, mdnsEvents, logFile)
 
 	if len(cfg.Interfaces) > 0 {
 		runWithMappedInterfaces(cfg, poolsMap, mirrorPeers, mdnsEvents)
 		return
 	}
 	runWithTaggedInterface(cfg, poolsMap, mirrorPeers, mdnsEvents)
+}
+
+func configureLogFile(logFilePath string) *os.File {
+	if logFilePath == "" {
+		return nil
+	}
+
+	logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		log.Fatalf("Could not open log file %s: %v", logFilePath, err)
+	}
+	log.SetOutput(io.MultiWriter(os.Stderr, logFile))
+	log.Printf("Writing logs to %s", logFilePath)
+	return logFile
+}
+
+func scheduleTimedExit(runDuration time.Duration, mdnsEvents *mdnsEventSink, logFile *os.File) {
+	if runDuration <= 0 {
+		return
+	}
+
+	go func() {
+		<-time.After(runDuration)
+		log.Printf("Run duration %s elapsed; flushing logs and exiting", runDuration)
+		mdnsEvents.stopAndFlush()
+		if logFile != nil {
+			if err := logFile.Sync(); err != nil {
+				log.Printf("Could not sync log file: %v", err)
+			}
+			if err := logFile.Close(); err != nil {
+				log.Printf("Could not close log file: %v", err)
+			}
+		}
+		os.Exit(0)
+	}()
 }
 
 func debugServer(port int) {

@@ -71,6 +71,12 @@ A pprof server will listen on port `6060` if the you use the `-debug` flag.
 
 More information on pprof is available [here](https://golang.org/pkg/net/http/pprof/)
 
+To collect mDNS forwarding diagnostics for five minutes and save them to a file:
+
+```
+./bonjour-reflector -config=./config.toml -mdns-debug -run-duration=5m -log-file=/tmp/bonjour-reflector-mdns.log
+```
+
 ## License
 
 MIT

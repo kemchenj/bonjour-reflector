@@ -15,9 +15,12 @@ import (
 const mdnsLogBufferSize = 4096
 
 type mdnsEventSink struct {
-	events  chan mdnsLogEvent
-	dropped uint64
-	debug   bool
+	events   chan mdnsLogEvent
+	stop     chan struct{}
+	done     chan struct{}
+	dropped  uint64
+	stopping uint32
+	debug    bool
 }
 
 type mdnsLogEvent struct {
@@ -57,6 +60,8 @@ type mdnsLogAggregator struct {
 func startMDNSSummaryLogger(interval time.Duration, debug bool) *mdnsEventSink {
 	sink := &mdnsEventSink{
 		events: make(chan mdnsLogEvent, mdnsLogBufferSize),
+		stop:   make(chan struct{}),
+		done:   make(chan struct{}),
 		debug:  debug,
 	}
 	go runMDNSSummaryLogger(sink, interval)
@@ -66,6 +71,7 @@ func startMDNSSummaryLogger(interval time.Duration, debug bool) *mdnsEventSink {
 func runMDNSSummaryLogger(sink *mdnsEventSink, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	defer close(sink.done)
 
 	aggregator := newMDNSLogAggregator(interval)
 	for {
@@ -75,12 +81,31 @@ func runMDNSSummaryLogger(sink *mdnsEventSink, interval time.Duration) {
 		case <-ticker.C:
 			dropped := atomic.SwapUint64(&sink.dropped, 0)
 			aggregator.flush(dropped, log.Printf)
+		case <-sink.stop:
+			drainMDNSLogEvents(sink, aggregator)
+			dropped := atomic.SwapUint64(&sink.dropped, 0)
+			aggregator.flush(dropped, log.Printf)
+			return
+		}
+	}
+}
+
+func drainMDNSLogEvents(sink *mdnsEventSink, aggregator *mdnsLogAggregator) {
+	for {
+		select {
+		case event := <-sink.events:
+			aggregator.add(event)
+		default:
+			return
 		}
 	}
 }
 
 func (sink *mdnsEventSink) emit(event mdnsLogEvent) {
 	if sink == nil {
+		return
+	}
+	if atomic.LoadUint32(&sink.stopping) != 0 {
 		return
 	}
 	select {
@@ -92,6 +117,18 @@ func (sink *mdnsEventSink) emit(event mdnsLogEvent) {
 
 func (sink *mdnsEventSink) debugEnabled() bool {
 	return sink != nil && sink.debug
+}
+
+func (sink *mdnsEventSink) stopAndFlush() {
+	if sink == nil {
+		return
+	}
+	if !atomic.CompareAndSwapUint32(&sink.stopping, 0, 1) {
+		<-sink.done
+		return
+	}
+	close(sink.stop)
+	<-sink.done
 }
 
 func newMDNSLogAggregator(interval time.Duration) *mdnsLogAggregator {
