@@ -13,6 +13,7 @@ type bonjourPacket struct {
 	dstMAC     *net.HardwareAddr
 	isIPv6     bool
 	vlanTag    *uint16
+	dns        *layers.DNS
 	isDNSQuery bool
 }
 
@@ -37,7 +38,7 @@ func parsePacketsLazily(source *gopacket.PacketSource) chan bonjourPacket {
 			// Get UDP payload
 			payload := parseUDPLayer(packet)
 
-			isDNSQuery, ok := parseDNSPayload(payload)
+			dns, isDNSQuery, ok := parseDNSPayload(payload)
 			if !ok {
 				// Ignore malformed or non-DNS UDP payloads to avoid misrouting.
 				continue
@@ -51,6 +52,7 @@ func parsePacketsLazily(source *gopacket.PacketSource) chan bonjourPacket {
 				dstMAC:     dstMAC,
 				isIPv6:     isIPv6,
 				isDNSQuery: isDNSQuery,
+				dns:        dns,
 			}
 		}
 	}()
@@ -90,10 +92,11 @@ func parseUDPLayer(packet gopacket.Packet) (payload []byte) {
 	return
 }
 
-func parseDNSPayload(payload []byte) (isDNSQuery bool, ok bool) {
+func parseDNSPayload(payload []byte) (dns *layers.DNS, isDNSQuery bool, ok bool) {
 	packet := gopacket.NewPacket(payload, layers.LayerTypeDNS, gopacket.Default)
 	if parsedDNS := packet.Layer(layers.LayerTypeDNS); parsedDNS != nil {
-		isDNSQuery = !parsedDNS.(*layers.DNS).QR
+		dns = parsedDNS.(*layers.DNS)
+		isDNSQuery = !dns.QR
 		ok = true
 	}
 	return
@@ -103,7 +106,7 @@ type packetWriter interface {
 	WritePacketData([]byte) error
 }
 
-func sendBonjourPacket(handle packetWriter, bonjourPacket *bonjourPacket, tag uint16, brMACAddress net.HardwareAddr) {
+func sendBonjourPacket(handle packetWriter, bonjourPacket *bonjourPacket, tag uint16, brMACAddress net.HardwareAddr) error {
 	if bonjourPacket.vlanTag != nil {
 		*bonjourPacket.vlanTag = tag
 	}
@@ -119,5 +122,5 @@ func sendBonjourPacket(handle packetWriter, bonjourPacket *bonjourPacket, tag ui
 
 	buf := gopacket.NewSerializeBuffer()
 	gopacket.SerializePacket(buf, gopacket.SerializeOptions{}, bonjourPacket.packet)
-	handle.WritePacketData(buf.Bytes())
+	return handle.WritePacketData(buf.Bytes())
 }

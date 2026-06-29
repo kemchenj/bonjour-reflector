@@ -185,9 +185,12 @@ func TestParseDNSPayload(t *testing.T) {
 	questionPacketPayload := parseUDPLayer(questionPacket)
 
 	questionExpectedResult := true
-	questionComputedResult, questionOK := parseDNSPayload(questionPacketPayload)
+	questionDNS, questionComputedResult, questionOK := parseDNSPayload(questionPacketPayload)
 	if !reflect.DeepEqual(questionExpectedResult, questionComputedResult) || !questionOK {
 		t.Error("Error in parseDNSPayload() for DNS queries")
+	}
+	if questionDNS == nil || len(questionDNS.Questions) != 1 {
+		t.Error("Error in parseDNSPayload() for DNS queries: expected parsed DNS question")
 	}
 
 	answerPacket := gopacket.NewPacket(createMockmDNSPacket(true, false), decoder, options)
@@ -195,16 +198,22 @@ func TestParseDNSPayload(t *testing.T) {
 	answerPacketPayload := parseUDPLayer(answerPacket)
 
 	answerExpectedResult := false
-	answerComputedResult, answerOK := parseDNSPayload(answerPacketPayload)
+	answerDNS, answerComputedResult, answerOK := parseDNSPayload(answerPacketPayload)
 	if !reflect.DeepEqual(answerExpectedResult, answerComputedResult) || !answerOK {
 		t.Error("Error in parseDNSPayload() for DNS answers")
+	}
+	if answerDNS == nil || len(answerDNS.Answers) != 1 {
+		t.Error("Error in parseDNSPayload() for DNS answers: expected parsed DNS answer")
 	}
 }
 
 func TestParseDNSPayloadMalformed(t *testing.T) {
-	computedResult, ok := parseDNSPayload([]byte{0x01, 0x02, 0x03})
+	dns, computedResult, ok := parseDNSPayload([]byte{0x01, 0x02, 0x03})
 	if ok {
 		t.Error("Error in parseDNSPayload() for malformed payload: expected parse failure")
+	}
+	if dns != nil {
+		t.Error("Error in parseDNSPayload() for malformed payload: expected nil DNS")
 	}
 	if computedResult {
 		t.Error("Error in parseDNSPayload() for malformed payload: expected false query flag")

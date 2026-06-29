@@ -69,12 +69,13 @@ func main() {
 	}
 	poolsMap := mapByPool(cfg.Devices)
 	mirrorPeers := buildMirrorPeers(cfg.MirrorGroups)
+	mdnsEvents := startMDNSSummaryLogger(30 * time.Second)
 
 	if len(cfg.Interfaces) > 0 {
-		runWithMappedInterfaces(cfg, poolsMap, mirrorPeers)
+		runWithMappedInterfaces(cfg, poolsMap, mirrorPeers, mdnsEvents)
 		return
 	}
-	runWithTaggedInterface(cfg, poolsMap, mirrorPeers)
+	runWithTaggedInterface(cfg, poolsMap, mirrorPeers, mdnsEvents)
 }
 
 func debugServer(port int) {
@@ -84,7 +85,7 @@ func debugServer(port int) {
 	}
 }
 
-func runWithTaggedInterface(cfg brconfig, poolsMap, mirrorPeers map[uint16][]uint16) {
+func runWithTaggedInterface(cfg brconfig, poolsMap, mirrorPeers map[uint16][]uint16, mdnsEvents *mdnsEventSink) {
 	// Get a handle on the network interface
 	rawTraffic, err := pcap.OpenLive(cfg.NetInterface, 65536, true, time.Second)
 	if err != nil {
@@ -114,11 +115,11 @@ func runWithTaggedInterface(cfg brconfig, poolsMap, mirrorPeers map[uint16][]uin
 		if bonjourPacket.vlanTag == nil {
 			continue
 		}
-		processPacket(cfg, poolsMap, mirrorPeers, *bonjourPacket.vlanTag, rawTraffic, brMACAddress, &bonjourPacket)
+		processPacket(cfg, poolsMap, mirrorPeers, *bonjourPacket.vlanTag, rawTraffic, brMACAddress, &bonjourPacket, mdnsEvents)
 	}
 }
 
-func runWithMappedInterfaces(cfg brconfig, poolsMap, mirrorPeers map[uint16][]uint16) {
+func runWithMappedInterfaces(cfg brconfig, poolsMap, mirrorPeers map[uint16][]uint16, mdnsEvents *mdnsEventSink) {
 	interfacesByPool := make(map[uint16]egressInterface)
 	interfaceMACs := make(map[string]net.HardwareAddr)
 	localMACs := []net.HardwareAddr{}
@@ -163,7 +164,7 @@ func runWithMappedInterfaces(cfg brconfig, poolsMap, mirrorPeers map[uint16][]ui
 	}
 
 	for incoming := range ingress {
-		processPacketWithPoolMap(cfg, poolsMap, mirrorPeers, incoming.pool, interfacesByPool, &incoming.packet)
+		processPacketWithPoolMap(cfg, poolsMap, mirrorPeers, incoming.pool, interfacesByPool, &incoming.packet, mdnsEvents)
 	}
 }
 
@@ -175,11 +176,15 @@ func processPacket(
 	defaultHandle *pcap.Handle,
 	defaultMAC net.HardwareAddr,
 	bonjourPacket *bonjourPacket,
+	mdnsEvents *mdnsEventSink,
 ) {
+	sourceMAC := hardwareAddrString(bonjourPacket.srcMAC)
 	if bonjourPacket.isDNSQuery {
 		tags := mergeDedupeUint16(poolsMap[sourcePool], mirrorPeers[sourcePool])
 		for _, tag := range tags {
-			sendBonjourPacket(defaultHandle, bonjourPacket, tag, defaultMAC)
+			if err := sendBonjourPacket(defaultHandle, bonjourPacket, tag, defaultMAC); err == nil {
+				emitForwardedMDNSEvents(mdnsEvents, bonjourPacket, sourcePool, tag, sourceMAC)
+			}
 		}
 		return
 	}
@@ -191,7 +196,9 @@ func processPacket(
 		tags = mirrorPeers[sourcePool]
 	}
 	for _, tag := range tags {
-		sendBonjourPacket(defaultHandle, bonjourPacket, tag, defaultMAC)
+		if err := sendBonjourPacket(defaultHandle, bonjourPacket, tag, defaultMAC); err == nil {
+			emitForwardedMDNSEvents(mdnsEvents, bonjourPacket, sourcePool, tag, sourceMAC)
+		}
 	}
 }
 
@@ -202,6 +209,7 @@ func processPacketWithPoolMap(
 	sourcePool uint16,
 	interfacesByPool map[uint16]egressInterface,
 	bonjourPacket *bonjourPacket,
+	mdnsEvents *mdnsEventSink,
 ) {
 	var tags []uint16
 	if bonjourPacket.isDNSQuery {
@@ -212,11 +220,14 @@ func processPacketWithPoolMap(
 		tags = mirrorPeers[sourcePool]
 	}
 
+	sourceMAC := hardwareAddrString(bonjourPacket.srcMAC)
 	for _, targetPool := range tags {
 		outgoing, ok := interfacesByPool[targetPool]
 		if !ok {
 			continue
 		}
-		sendBonjourPacket(outgoing.handle, bonjourPacket, targetPool, outgoing.mac)
+		if err := sendBonjourPacket(outgoing.handle, bonjourPacket, targetPool, outgoing.mac); err == nil {
+			emitForwardedMDNSEvents(mdnsEvents, bonjourPacket, sourcePool, targetPool, sourceMAC)
+		}
 	}
 }
