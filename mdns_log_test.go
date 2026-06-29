@@ -136,6 +136,41 @@ func TestMDNSEventsFromDNSGoodbye(t *testing.T) {
 	}
 }
 
+func TestMDNSEventsFromDNSDetails(t *testing.T) {
+	dns := &layers.DNS{
+		Questions: []layers.DNSQuestion{
+			{
+				Name:  []byte("_airplay._tcp.local"),
+				Type:  layers.DNSTypePTR,
+				Class: layers.DNSClass(uint16(layers.DNSClassIN) | mdnsDNSClassFlagBit),
+			},
+		},
+	}
+
+	got := mdnsEventsFromDNSWithDetails(dns, 10, 1, "aa:bb:cc:dd:ee:ff", true)
+	if len(got) != 1 || got[0].Details != "q=QU class=IN" {
+		t.Fatalf("mdnsEventsFromDNSWithDetails() = %#v, want QU query details", got)
+	}
+
+	dns = &layers.DNS{
+		QR: true,
+		Answers: []layers.DNSResourceRecord{
+			{
+				Name:  []byte("appletv.local"),
+				Type:  layers.DNSTypeA,
+				TTL:   120,
+				IP:    net.IP{192, 168, 1, 23},
+				Class: layers.DNSClass(uint16(layers.DNSClassIN) | mdnsDNSClassFlagBit),
+			},
+		},
+	}
+
+	got = mdnsEventsFromDNSWithDetails(dns, 1, 10, "aa:bb:cc:dd:ee:ff", true)
+	if len(got) != 1 || got[0].Details != "ttl=120 cache_flush=true class=IN" {
+		t.Fatalf("mdnsEventsFromDNSWithDetails() = %#v, want cache-flush response details", got)
+	}
+}
+
 func TestMDNSLogAggregatorFlush(t *testing.T) {
 	aggregator := newMDNSLogAggregator(30 * time.Second)
 	aggregator.add(mdnsLogEvent{
@@ -179,6 +214,38 @@ func TestMDNSLogAggregatorFlush(t *testing.T) {
 	})
 	if flushed || len(lines) != 0 {
 		t.Fatalf("second flush logged %#v, want no output", lines)
+	}
+}
+
+func TestMDNSLogAggregatorFlushSourceSamples(t *testing.T) {
+	aggregator := newMDNSLogAggregator(30 * time.Second)
+	aggregator.sourceLimit = 2
+	for _, sourceMAC := range []string{"cc:cc:cc:cc:cc:cc", "aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"} {
+		aggregator.add(mdnsLogEvent{
+			SourcePool: 10,
+			SrcMAC:     sourceMAC,
+			Stage:      "rx",
+			Kind:       "query",
+			RecordType: "PTR",
+			Name:       "_airplay._tcp.local",
+			Details:    "q=QM class=IN",
+		})
+	}
+
+	lines := []string{}
+	flushed := aggregator.flush(0, func(format string, args ...interface{}) {
+		lines = append(lines, fmt.Sprintf(format, args...))
+	})
+	if !flushed {
+		t.Fatal("flush() = false, want true")
+	}
+
+	want := []string{
+		"mdns summary window=30s events=3 dropped_log_events=0",
+		"  vlan10 rx query PTR _airplay._tcp.local q=QM class=IN count=3 sources=3 source_macs=aa:aa:aa:aa:aa:aa,bb:bb:bb:bb:bb:bb,+1",
+	}
+	if !reflect.DeepEqual(lines, want) {
+		t.Fatalf("flush() logged %#v, want %#v", lines, want)
 	}
 }
 

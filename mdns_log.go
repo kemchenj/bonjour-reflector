@@ -12,7 +12,11 @@ import (
 	"github.com/google/gopacket/layers"
 )
 
-const mdnsLogBufferSize = 4096
+const (
+	mdnsLogBufferSize   = 4096
+	mdnsLogSourceLimit  = 4
+	mdnsDNSClassFlagBit = 0x8000
+)
 
 type mdnsEventSink struct {
 	events   chan mdnsLogEvent
@@ -33,6 +37,7 @@ type mdnsLogEvent struct {
 	RecordType string
 	Name       string
 	Value      string
+	Details    string
 }
 
 type mdnsLogKey struct {
@@ -44,6 +49,7 @@ type mdnsLogKey struct {
 	recordType string
 	name       string
 	value      string
+	details    string
 }
 
 type mdnsLogBucket struct {
@@ -52,9 +58,10 @@ type mdnsLogBucket struct {
 }
 
 type mdnsLogAggregator struct {
-	interval time.Duration
-	events   map[mdnsLogKey]*mdnsLogBucket
-	total    int
+	interval    time.Duration
+	sourceLimit int
+	events      map[mdnsLogKey]*mdnsLogBucket
+	total       int
 }
 
 func startMDNSSummaryLogger(interval time.Duration, debug bool) *mdnsEventSink {
@@ -74,6 +81,9 @@ func runMDNSSummaryLogger(sink *mdnsEventSink, interval time.Duration) {
 	defer close(sink.done)
 
 	aggregator := newMDNSLogAggregator(interval)
+	if sink.debug {
+		aggregator.sourceLimit = mdnsLogSourceLimit
+	}
 	for {
 		select {
 		case event := <-sink.events:
@@ -152,6 +162,7 @@ func (aggregator *mdnsLogAggregator) add(event mdnsLogEvent) {
 		recordType: event.RecordType,
 		name:       event.Name,
 		value:      event.Value,
+		details:    event.Details,
 	}
 	bucket := aggregator.events[key]
 	if bucket == nil {
@@ -182,6 +193,11 @@ func (aggregator *mdnsLogAggregator) flush(dropped uint64, logf func(string, ...
 
 	for _, key := range keys {
 		bucket := aggregator.events[key]
+		sourceSamples := formatMDNSLogSourceSamples(bucket.sources, aggregator.sourceLimit)
+		if sourceSamples != "" {
+			logf("  %s count=%d sources=%d source_macs=%s", formatMDNSLogKey(key), bucket.count, len(bucket.sources), sourceSamples)
+			continue
+		}
 		logf("  %s count=%d sources=%d", formatMDNSLogKey(key), bucket.count, len(bucket.sources))
 	}
 
@@ -203,8 +219,8 @@ func compareMDNSLogKeys(a, b mdnsLogKey) int {
 		}
 		return 1
 	}
-	fieldsA := []string{a.stage, a.reason, a.kind, a.recordType, a.name, a.value}
-	fieldsB := []string{b.stage, b.reason, b.kind, b.recordType, b.name, b.value}
+	fieldsA := []string{a.stage, a.reason, a.kind, a.recordType, a.name, a.value, a.details}
+	fieldsB := []string{b.stage, b.reason, b.kind, b.recordType, b.name, b.value, b.details}
 	for i := range fieldsA {
 		if fieldsA[i] < fieldsB[i] {
 			return -1
@@ -228,6 +244,9 @@ func formatMDNSLogKey(key mdnsLogKey) string {
 	if key.value != "" {
 		record += " -> " + key.value
 	}
+	if key.details != "" {
+		record += " " + key.details
+	}
 
 	switch key.stage {
 	case "rx":
@@ -248,7 +267,7 @@ func emitForwardedMDNSEvents(sink *mdnsEventSink, bonjourPacket *bonjourPacket, 
 	if sink == nil || bonjourPacket == nil || bonjourPacket.dns == nil {
 		return
 	}
-	for _, event := range mdnsEventsFromDNS(bonjourPacket.dns, sourcePool, targetPool, sourceMAC) {
+	for _, event := range mdnsEventsFromDNSWithDetails(bonjourPacket.dns, sourcePool, targetPool, sourceMAC, sink.debugEnabled()) {
 		sink.emit(event)
 	}
 }
@@ -257,7 +276,7 @@ func emitDebugMDNSEvents(sink *mdnsEventSink, bonjourPacket *bonjourPacket, sour
 	if !sink.debugEnabled() || bonjourPacket == nil || bonjourPacket.dns == nil {
 		return
 	}
-	for _, event := range mdnsEventsFromDNS(bonjourPacket.dns, sourcePool, targetPool, sourceMAC) {
+	for _, event := range mdnsEventsFromDNSWithDetails(bonjourPacket.dns, sourcePool, targetPool, sourceMAC, true) {
 		event.Stage = stage
 		event.Reason = reason
 		sink.emit(event)
@@ -265,6 +284,10 @@ func emitDebugMDNSEvents(sink *mdnsEventSink, bonjourPacket *bonjourPacket, sour
 }
 
 func mdnsEventsFromDNS(dns *layers.DNS, sourcePool, targetPool uint16, sourceMAC string) []mdnsLogEvent {
+	return mdnsEventsFromDNSWithDetails(dns, sourcePool, targetPool, sourceMAC, false)
+}
+
+func mdnsEventsFromDNSWithDetails(dns *layers.DNS, sourcePool, targetPool uint16, sourceMAC string, includeDetails bool) []mdnsLogEvent {
 	if dns == nil {
 		return nil
 	}
@@ -279,19 +302,20 @@ func mdnsEventsFromDNS(dns *layers.DNS, sourcePool, targetPool uint16, sourceMAC
 				Kind:       "query",
 				RecordType: dnsTypeName(question.Type),
 				Name:       dnsName(question.Name),
+				Details:    mdnsQuestionDetails(question, includeDetails),
 			})
 		}
 		return events
 	}
 
 	events := []mdnsLogEvent{}
-	events = appendMDNSRecordEvents(events, dns.Answers, sourcePool, targetPool, sourceMAC)
-	events = appendMDNSRecordEvents(events, dns.Authorities, sourcePool, targetPool, sourceMAC)
-	events = appendMDNSRecordEvents(events, dns.Additionals, sourcePool, targetPool, sourceMAC)
+	events = appendMDNSRecordEvents(events, dns.Answers, sourcePool, targetPool, sourceMAC, includeDetails)
+	events = appendMDNSRecordEvents(events, dns.Authorities, sourcePool, targetPool, sourceMAC, includeDetails)
+	events = appendMDNSRecordEvents(events, dns.Additionals, sourcePool, targetPool, sourceMAC, includeDetails)
 	return events
 }
 
-func appendMDNSRecordEvents(events []mdnsLogEvent, records []layers.DNSResourceRecord, sourcePool, targetPool uint16, sourceMAC string) []mdnsLogEvent {
+func appendMDNSRecordEvents(events []mdnsLogEvent, records []layers.DNSResourceRecord, sourcePool, targetPool uint16, sourceMAC string, includeDetails bool) []mdnsLogEvent {
 	for _, record := range records {
 		recordType := dnsTypeName(record.Type)
 		value, ok := dnsRecordValue(record)
@@ -312,9 +336,29 @@ func appendMDNSRecordEvents(events []mdnsLogEvent, records []layers.DNSResourceR
 			RecordType: recordType,
 			Name:       dnsName(record.Name),
 			Value:      value,
+			Details:    mdnsRecordDetails(record, includeDetails),
 		})
 	}
 	return events
+}
+
+func mdnsQuestionDetails(question layers.DNSQuestion, includeDetails bool) string {
+	if !includeDetails {
+		return ""
+	}
+
+	responseMode := "QM"
+	if dnsClassHasFlagBit(question.Class) {
+		responseMode = "QU"
+	}
+	return fmt.Sprintf("q=%s class=%s", responseMode, dnsClassName(question.Class))
+}
+
+func mdnsRecordDetails(record layers.DNSResourceRecord, includeDetails bool) string {
+	if !includeDetails {
+		return ""
+	}
+	return fmt.Sprintf("ttl=%d cache_flush=%t class=%s", record.TTL, dnsClassHasFlagBit(record.Class), dnsClassName(record.Class))
 }
 
 func dnsRecordValue(record layers.DNSResourceRecord) (string, bool) {
@@ -352,6 +396,28 @@ func dnsTypeName(dnsType layers.DNSType) string {
 	}
 }
 
+func dnsClassName(dnsClass layers.DNSClass) string {
+	baseClass := layers.DNSClass(uint16(dnsClass) &^ mdnsDNSClassFlagBit)
+	switch baseClass {
+	case layers.DNSClassIN:
+		return "IN"
+	case layers.DNSClassCS:
+		return "CS"
+	case layers.DNSClassCH:
+		return "CH"
+	case layers.DNSClassHS:
+		return "HS"
+	case layers.DNSClassAny:
+		return "ANY"
+	default:
+		return fmt.Sprintf("CLASS%d", uint16(baseClass))
+	}
+}
+
+func dnsClassHasFlagBit(dnsClass layers.DNSClass) bool {
+	return uint16(dnsClass)&mdnsDNSClassFlagBit != 0
+}
+
 func dnsName(name []byte) string {
 	if len(name) == 0 {
 		return "."
@@ -386,4 +452,21 @@ func hardwareAddrString(addr *net.HardwareAddr) string {
 		return ""
 	}
 	return addr.String()
+}
+
+func formatMDNSLogSourceSamples(sources map[string]struct{}, limit int) string {
+	if limit <= 0 || len(sources) == 0 {
+		return ""
+	}
+
+	sourceMACs := make([]string, 0, len(sources))
+	for source := range sources {
+		sourceMACs = append(sourceMACs, source)
+	}
+	sort.Strings(sourceMACs)
+
+	if len(sourceMACs) <= limit {
+		return strings.Join(sourceMACs, ",")
+	}
+	return fmt.Sprintf("%s,+%d", strings.Join(sourceMACs[:limit], ","), len(sourceMACs)-limit)
 }
