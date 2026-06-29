@@ -34,10 +34,6 @@ func createMockmDNSPacket(isIPv4 bool, isDNSQuery bool) []byte {
 }
 
 func createRawPacket(isIPv4 bool, isDNSQuery bool, vlanTag uint16, dstIP net.IP, srcMAC net.HardwareAddr, dstMAC net.HardwareAddr, dstPort layers.UDPPort) []byte {
-	return createRawPacketWithQuestionClass(isIPv4, isDNSQuery, vlanTag, dstIP, srcMAC, dstMAC, dstPort, layers.DNSClassIN)
-}
-
-func createRawPacketWithQuestionClass(isIPv4 bool, isDNSQuery bool, vlanTag uint16, dstIP net.IP, srcMAC net.HardwareAddr, dstMAC net.HardwareAddr, dstPort layers.UDPPort, questionClass layers.DNSClass) []byte {
 	var ethernetLayer, dot1QLayer, ipLayer, udpLayer, dnsLayer gopacket.SerializableLayer
 
 	ethernetLayer = &layers.Ethernet{
@@ -86,7 +82,7 @@ func createRawPacketWithQuestionClass(isIPv4 bool, isDNSQuery bool, vlanTag uint
 			Questions: []layers.DNSQuestion{layers.DNSQuestion{
 				Name:  []byte("example.com"),
 				Type:  layers.DNSTypeA,
-				Class: questionClass,
+				Class: layers.DNSClassIN,
 			}},
 			QDCount: 1,
 		}
@@ -346,56 +342,5 @@ func TestSendBonjourPacket(t *testing.T) {
 	sendBonjourPacket(pw, &bonjourTestPacketIPv6, newVlanTag, brMACTest)
 	if !reflect.DeepEqual(expectedPacketIPv6.Layers(), pw.packet.Layers()) {
 		t.Error("Error in sendBonjourPacket() for IPv6")
-	}
-}
-
-func TestSendBonjourPacketClearsQuestionQUBit(t *testing.T) {
-	questionClass := layers.DNSClass(uint16(layers.DNSClassIN) | uint16(mdnsQUBit))
-	initialData := createRawPacketWithQuestionClass(true, true, vlanIdentifierTest, dstIPv4Test, srcMACTest, dstMACTest, dstUDPPortTest, questionClass)
-	decoder := gopacket.DecodersByLayerName["Ethernet"]
-	initialPacket := gopacket.NewPacket(initialData, decoder, gopacket.DecodeOptions{Lazy: true})
-	srcMAC, dstMAC := parseEthernetLayer(initialPacket)
-	dnsLayer, _, ok := parseDNSPayload(parseUDPLayer(initialPacket))
-	if !ok {
-		t.Fatal("parseDNSPayload() failed for QU query packet")
-	}
-	bonjourTestPacket := bonjourPacket{
-		packet:     initialPacket,
-		vlanTag:    parseVLANTag(initialPacket),
-		srcMAC:     srcMAC,
-		dstMAC:     dstMAC,
-		isDNSQuery: true,
-		isIPv6:     false,
-		dns:        dnsLayer,
-	}
-
-	pw := &mockPacketWriter{packet: nil}
-	if err := sendBonjourPacket(pw, &bonjourTestPacket, uint16(29), brMACTest); err != nil {
-		t.Fatalf("sendBonjourPacket() returned error: %v", err)
-	}
-
-	outDNS, _, ok := parseDNSPayload(parseUDPLayer(pw.packet))
-	if !ok {
-		t.Fatal("parseDNSPayload() failed for forwarded query packet")
-	}
-	if len(outDNS.Questions) != 1 {
-		t.Fatalf("sendBonjourPacket() wrote %d DNS questions, want 1", len(outDNS.Questions))
-	}
-	if outDNS.Questions[0].Class != layers.DNSClassIN {
-		t.Fatalf("sendBonjourPacket() wrote DNS question class %v, want %v", outDNS.Questions[0].Class, layers.DNSClassIN)
-	}
-	if dnsLayer.Questions[0].Class != layers.DNSClassIN {
-		t.Fatalf("sendBonjourPacket() left cached DNS question class %v, want %v", dnsLayer.Questions[0].Class, layers.DNSClassIN)
-	}
-
-	if err := sendBonjourPacket(pw, &bonjourTestPacket, uint16(28), brMACTest); err != nil {
-		t.Fatalf("second sendBonjourPacket() returned error: %v", err)
-	}
-	outDNS, _, ok = parseDNSPayload(parseUDPLayer(pw.packet))
-	if !ok {
-		t.Fatal("parseDNSPayload() failed for second forwarded query packet")
-	}
-	if outDNS.Questions[0].Class != layers.DNSClassIN {
-		t.Fatalf("second sendBonjourPacket() wrote DNS question class %v, want %v", outDNS.Questions[0].Class, layers.DNSClassIN)
 	}
 }
