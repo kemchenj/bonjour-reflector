@@ -181,3 +181,78 @@ func TestMDNSLogAggregatorFlush(t *testing.T) {
 		t.Fatalf("second flush logged %#v, want no output", lines)
 	}
 }
+
+func TestMDNSLogAggregatorFlushDebugStages(t *testing.T) {
+	aggregator := newMDNSLogAggregator(30 * time.Second)
+	aggregator.add(mdnsLogEvent{
+		SourcePool: 10,
+		SrcMAC:     "aa:bb:cc:dd:ee:ff",
+		Stage:      "rx",
+		Kind:       "query",
+		RecordType: "PTR",
+		Name:       "_airplay._tcp.local",
+	})
+	aggregator.add(mdnsLogEvent{
+		SourcePool: 10,
+		Stage:      "skip",
+		Reason:     "no_target_pool",
+		Kind:       "query",
+		RecordType: "PTR",
+		Name:       "_airplay._tcp.local",
+	})
+	aggregator.add(mdnsLogEvent{
+		SourcePool: 10,
+		TargetPool: 1,
+		Stage:      "error",
+		Reason:     "write_failed:test",
+		Kind:       "query",
+		RecordType: "PTR",
+		Name:       "_airplay._tcp.local",
+	})
+
+	lines := []string{}
+	flushed := aggregator.flush(0, func(format string, args ...interface{}) {
+		lines = append(lines, fmt.Sprintf(format, args...))
+	})
+	if !flushed {
+		t.Fatal("flush() = false, want true")
+	}
+
+	want := []string{
+		"mdns summary window=30s events=3 dropped_log_events=0",
+		"  vlan10 rx query PTR _airplay._tcp.local count=1 sources=1",
+		"  vlan10 skip reason=no_target_pool query PTR _airplay._tcp.local count=1 sources=0",
+		"  vlan10 -> vlan1 error reason=write_failed:test query PTR _airplay._tcp.local count=1 sources=0",
+	}
+	if !reflect.DeepEqual(lines, want) {
+		t.Fatalf("flush() logged %#v, want %#v", lines, want)
+	}
+}
+
+func TestEmitDebugMDNSEventsRequiresDebug(t *testing.T) {
+	dns := &layers.DNS{
+		Questions: []layers.DNSQuestion{
+			{
+				Name: []byte("_airplay._tcp.local"),
+				Type: layers.DNSTypePTR,
+			},
+		},
+	}
+	packet := &bonjourPacket{dns: dns}
+
+	disabled := &mdnsEventSink{events: make(chan mdnsLogEvent, 1)}
+	emitDebugMDNSEvents(disabled, packet, 10, 0, "rx", "", "aa:bb:cc:dd:ee:ff")
+	if len(disabled.events) != 0 {
+		t.Fatalf("emitDebugMDNSEvents() emitted with debug disabled")
+	}
+
+	enabled := &mdnsEventSink{events: make(chan mdnsLogEvent, 1), debug: true}
+	emitDebugMDNSEvents(enabled, packet, 10, 0, "rx", "", "aa:bb:cc:dd:ee:ff")
+	if len(enabled.events) != 1 {
+		t.Fatalf("emitDebugMDNSEvents() emitted %d events, want 1", len(enabled.events))
+	}
+	event := <-enabled.events
+	if event.Stage != "rx" || event.SourcePool != 10 || event.Name != "_airplay._tcp.local" {
+		t.Fatalf("emitDebugMDNSEvents() event = %#v", event)
+	}
+}

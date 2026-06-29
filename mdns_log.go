@@ -17,12 +17,15 @@ const mdnsLogBufferSize = 4096
 type mdnsEventSink struct {
 	events  chan mdnsLogEvent
 	dropped uint64
+	debug   bool
 }
 
 type mdnsLogEvent struct {
 	SourcePool uint16
 	TargetPool uint16
 	SrcMAC     string
+	Stage      string
+	Reason     string
 	Kind       string
 	RecordType string
 	Name       string
@@ -32,6 +35,8 @@ type mdnsLogEvent struct {
 type mdnsLogKey struct {
 	sourcePool uint16
 	targetPool uint16
+	stage      string
+	reason     string
 	kind       string
 	recordType string
 	name       string
@@ -49,9 +54,10 @@ type mdnsLogAggregator struct {
 	total    int
 }
 
-func startMDNSSummaryLogger(interval time.Duration) *mdnsEventSink {
+func startMDNSSummaryLogger(interval time.Duration, debug bool) *mdnsEventSink {
 	sink := &mdnsEventSink{
 		events: make(chan mdnsLogEvent, mdnsLogBufferSize),
+		debug:  debug,
 	}
 	go runMDNSSummaryLogger(sink, interval)
 	return sink
@@ -84,6 +90,10 @@ func (sink *mdnsEventSink) emit(event mdnsLogEvent) {
 	}
 }
 
+func (sink *mdnsEventSink) debugEnabled() bool {
+	return sink != nil && sink.debug
+}
+
 func newMDNSLogAggregator(interval time.Duration) *mdnsLogAggregator {
 	return &mdnsLogAggregator{
 		interval: interval,
@@ -99,6 +109,8 @@ func (aggregator *mdnsLogAggregator) add(event mdnsLogEvent) {
 	key := mdnsLogKey{
 		sourcePool: event.SourcePool,
 		targetPool: event.TargetPool,
+		stage:      normalizeMDNSLogStage(event.Stage),
+		reason:     event.Reason,
 		kind:       event.Kind,
 		recordType: event.RecordType,
 		name:       event.Name,
@@ -133,20 +145,7 @@ func (aggregator *mdnsLogAggregator) flush(dropped uint64, logf func(string, ...
 
 	for _, key := range keys {
 		bucket := aggregator.events[key]
-		value := ""
-		if key.value != "" {
-			value = " -> " + key.value
-		}
-		logf("  vlan%d -> vlan%d %s %s %s%s count=%d sources=%d",
-			key.sourcePool,
-			key.targetPool,
-			key.kind,
-			key.recordType,
-			key.name,
-			value,
-			bucket.count,
-			len(bucket.sources),
-		)
+		logf("  %s count=%d sources=%d", formatMDNSLogKey(key), bucket.count, len(bucket.sources))
 	}
 
 	aggregator.events = make(map[mdnsLogKey]*mdnsLogBucket)
@@ -167,8 +166,8 @@ func compareMDNSLogKeys(a, b mdnsLogKey) int {
 		}
 		return 1
 	}
-	fieldsA := []string{a.kind, a.recordType, a.name, a.value}
-	fieldsB := []string{b.kind, b.recordType, b.name, b.value}
+	fieldsA := []string{a.stage, a.reason, a.kind, a.recordType, a.name, a.value}
+	fieldsB := []string{b.stage, b.reason, b.kind, b.recordType, b.name, b.value}
 	for i := range fieldsA {
 		if fieldsA[i] < fieldsB[i] {
 			return -1
@@ -180,11 +179,50 @@ func compareMDNSLogKeys(a, b mdnsLogKey) int {
 	return 0
 }
 
+func normalizeMDNSLogStage(stage string) string {
+	if stage == "" {
+		return "forward"
+	}
+	return stage
+}
+
+func formatMDNSLogKey(key mdnsLogKey) string {
+	record := fmt.Sprintf("%s %s %s", key.kind, key.recordType, key.name)
+	if key.value != "" {
+		record += " -> " + key.value
+	}
+
+	switch key.stage {
+	case "rx":
+		return fmt.Sprintf("vlan%d rx %s", key.sourcePool, record)
+	case "skip":
+		if key.targetPool == 0 {
+			return fmt.Sprintf("vlan%d skip reason=%s %s", key.sourcePool, key.reason, record)
+		}
+		return fmt.Sprintf("vlan%d -> vlan%d skip reason=%s %s", key.sourcePool, key.targetPool, key.reason, record)
+	case "error":
+		return fmt.Sprintf("vlan%d -> vlan%d error reason=%s %s", key.sourcePool, key.targetPool, key.reason, record)
+	default:
+		return fmt.Sprintf("vlan%d -> vlan%d %s", key.sourcePool, key.targetPool, record)
+	}
+}
+
 func emitForwardedMDNSEvents(sink *mdnsEventSink, bonjourPacket *bonjourPacket, sourcePool, targetPool uint16, sourceMAC string) {
 	if sink == nil || bonjourPacket == nil || bonjourPacket.dns == nil {
 		return
 	}
 	for _, event := range mdnsEventsFromDNS(bonjourPacket.dns, sourcePool, targetPool, sourceMAC) {
+		sink.emit(event)
+	}
+}
+
+func emitDebugMDNSEvents(sink *mdnsEventSink, bonjourPacket *bonjourPacket, sourcePool, targetPool uint16, stage, reason, sourceMAC string) {
+	if !sink.debugEnabled() || bonjourPacket == nil || bonjourPacket.dns == nil {
+		return
+	}
+	for _, event := range mdnsEventsFromDNS(bonjourPacket.dns, sourcePool, targetPool, sourceMAC) {
+		event.Stage = stage
+		event.Reason = reason
 		sink.emit(event)
 	}
 }
