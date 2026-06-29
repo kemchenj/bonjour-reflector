@@ -13,9 +13,9 @@ import (
 )
 
 const (
-	mdnsLogBufferSize   = 4096
-	mdnsLogSourceLimit  = 4
-	mdnsDNSClassFlagBit = 0x8000
+	mdnsLogBufferSize  = 4096
+	mdnsLogSourceLimit = 4
+	mdnsClassFlagBit   = 0x8000
 )
 
 type mdnsEventSink struct {
@@ -397,7 +397,7 @@ func dnsTypeName(dnsType layers.DNSType) string {
 }
 
 func dnsClassName(dnsClass layers.DNSClass) string {
-	baseClass := layers.DNSClass(uint16(dnsClass) &^ mdnsDNSClassFlagBit)
+	baseClass := layers.DNSClass(uint16(dnsClass) &^ mdnsClassFlagBit)
 	switch baseClass {
 	case layers.DNSClassIN:
 		return "IN"
@@ -415,7 +415,7 @@ func dnsClassName(dnsClass layers.DNSClass) string {
 }
 
 func dnsClassHasFlagBit(dnsClass layers.DNSClass) bool {
-	return uint16(dnsClass)&mdnsDNSClassFlagBit != 0
+	return uint16(dnsClass)&mdnsClassFlagBit != 0
 }
 
 func dnsName(name []byte) string {

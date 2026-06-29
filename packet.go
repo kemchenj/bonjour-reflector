@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"net"
 
 	"github.com/google/gopacket"
@@ -14,6 +15,7 @@ type bonjourPacket struct {
 	isIPv6     bool
 	vlanTag    *uint16
 	dns        *layers.DNS
+	rewriteDNS bool
 	isDNSQuery bool
 }
 
@@ -107,6 +109,8 @@ type packetWriter interface {
 }
 
 func sendBonjourPacket(handle packetWriter, bonjourPacket *bonjourPacket, tag uint16, brMACAddress net.HardwareAddr) error {
+	serializeDNS := prepareDNSQueryForForwarding(bonjourPacket)
+
 	if bonjourPacket.vlanTag != nil {
 		*bonjourPacket.vlanTag = tag
 	}
@@ -121,8 +125,95 @@ func sendBonjourPacket(handle packetWriter, bonjourPacket *bonjourPacket, tag ui
 	}
 
 	buf := gopacket.NewSerializeBuffer()
-	if err := gopacket.SerializePacket(buf, gopacket.SerializeOptions{}, bonjourPacket.packet); err != nil {
+	if serializeDNS {
+		if err := serializeBonjourPacketWithDNS(buf, bonjourPacket); err != nil {
+			return err
+		}
+	} else if err := gopacket.SerializePacket(buf, gopacket.SerializeOptions{}, bonjourPacket.packet); err != nil {
 		return err
 	}
 	return handle.WritePacketData(buf.Bytes())
+}
+
+func prepareDNSQueryForForwarding(bonjourPacket *bonjourPacket) bool {
+	if bonjourPacket == nil || !bonjourPacket.isDNSQuery {
+		return false
+	}
+	if bonjourPacket.rewriteDNS {
+		return true
+	}
+
+	changed := false
+	if bonjourPacket.dns != nil {
+		changed = clearDNSQuestionsQUBit(bonjourPacket.dns) || changed
+	}
+	if bonjourPacket.packet != nil {
+		if dnsLayer := bonjourPacket.packet.Layer(layers.LayerTypeDNS); dnsLayer != nil {
+			changed = clearDNSQuestionsQUBit(dnsLayer.(*layers.DNS)) || changed
+		}
+	}
+	if changed {
+		bonjourPacket.rewriteDNS = true
+	}
+	return changed
+}
+
+func clearDNSQuestionsQUBit(dns *layers.DNS) bool {
+	changed := false
+	for i := range dns.Questions {
+		if dnsClassHasFlagBit(dns.Questions[i].Class) {
+			dns.Questions[i].Class = layers.DNSClass(uint16(dns.Questions[i].Class) &^ mdnsClassFlagBit)
+			changed = true
+		}
+	}
+	return changed
+}
+
+func serializeBonjourPacketWithDNS(buf gopacket.SerializeBuffer, bonjourPacket *bonjourPacket) error {
+	if bonjourPacket == nil {
+		return errors.New("cannot serialize nil Bonjour packet")
+	}
+	if bonjourPacket.packet == nil {
+		return errors.New("cannot serialize Bonjour packet without packet data")
+	}
+	if bonjourPacket.dns == nil {
+		return gopacket.SerializePacket(buf, gopacket.SerializeOptions{}, bonjourPacket.packet)
+	}
+
+	serializableLayers := []gopacket.SerializableLayer{}
+	if ethLayer := bonjourPacket.packet.Layer(layers.LayerTypeEthernet); ethLayer != nil {
+		serializableLayers = append(serializableLayers, ethLayer.(*layers.Ethernet))
+	} else {
+		return gopacket.SerializePacket(buf, gopacket.SerializeOptions{}, bonjourPacket.packet)
+	}
+	if vlanLayer := bonjourPacket.packet.Layer(layers.LayerTypeDot1Q); vlanLayer != nil {
+		serializableLayers = append(serializableLayers, vlanLayer.(*layers.Dot1Q))
+	}
+
+	var networkLayer gopacket.NetworkLayer
+	if ipv4Layer := bonjourPacket.packet.Layer(layers.LayerTypeIPv4); ipv4Layer != nil {
+		ipv4 := ipv4Layer.(*layers.IPv4)
+		networkLayer = ipv4
+		serializableLayers = append(serializableLayers, ipv4)
+	} else if ipv6Layer := bonjourPacket.packet.Layer(layers.LayerTypeIPv6); ipv6Layer != nil {
+		ipv6 := ipv6Layer.(*layers.IPv6)
+		networkLayer = ipv6
+		serializableLayers = append(serializableLayers, ipv6)
+	} else {
+		return gopacket.SerializePacket(buf, gopacket.SerializeOptions{}, bonjourPacket.packet)
+	}
+
+	udpLayer := bonjourPacket.packet.Layer(layers.LayerTypeUDP)
+	if udpLayer == nil {
+		return gopacket.SerializePacket(buf, gopacket.SerializeOptions{}, bonjourPacket.packet)
+	}
+	udp := udpLayer.(*layers.UDP)
+	if networkLayer != nil {
+		if err := udp.SetNetworkLayerForChecksum(networkLayer); err != nil {
+			return err
+		}
+	}
+	serializableLayers = append(serializableLayers, udp, bonjourPacket.dns)
+
+	return gopacket.SerializeLayers(buf, gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}, serializableLayers...)
 }

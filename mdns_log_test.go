@@ -142,7 +142,7 @@ func TestMDNSEventsFromDNSDetails(t *testing.T) {
 			{
 				Name:  []byte("_airplay._tcp.local"),
 				Type:  layers.DNSTypePTR,
-				Class: layers.DNSClass(uint16(layers.DNSClassIN) | mdnsDNSClassFlagBit),
+				Class: layers.DNSClass(uint16(layers.DNSClassIN) | mdnsClassFlagBit),
 			},
 		},
 	}
@@ -160,7 +160,7 @@ func TestMDNSEventsFromDNSDetails(t *testing.T) {
 				Type:  layers.DNSTypeA,
 				TTL:   120,
 				IP:    net.IP{192, 168, 1, 23},
-				Class: layers.DNSClass(uint16(layers.DNSClassIN) | mdnsDNSClassFlagBit),
+				Class: layers.DNSClass(uint16(layers.DNSClassIN) | mdnsClassFlagBit),
 			},
 		},
 	}
