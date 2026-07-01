@@ -1,5 +1,5 @@
 interfaces = [
   { name = "en0", pool = 10 },
-  { name = "en1", pool = 1 },
+  { name = "en6", pool = 1 },
 ]
 mirror_groups = [ [1, 10] ]
