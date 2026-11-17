@@ -10,6 +10,8 @@ Compared to other tools such as [avahi-reflector](http://www.avahi.org/), Bonjou
 
 Bonjour-reflector works by intercepting all mDNS traffic and rewriting layers 2 and 3 of the packets to reflect them across the appropriate VLANs.
 
+Forwarded DNS messages omit all AAAA address records and remove AAAA from NSEC type bitmaps, while preserving NSEC itself and other records. This advertises only IPv4 addresses across VLANs without disabling IPv6 on the host or changing network settings.
+
 A configuration file lists, for each Bonjour device (defined by its MAC address), which VLANs should have access to this device. mDNS packets will only be forwarded if the configuration file says so.
 
 The interface on which Bonjour-reflector runs should be configured so that it receives each VLAN's traffic, tagged.
@@ -23,7 +25,7 @@ In detail, here is what happens when Bonjour-reflector runs:
 
 ## Installation
 
-A Golang version more recent than Go 1.16 is recommended to build bonjour-reflector. Checkout https://golang.org/doc/install for instructions on how to install a recent version of Golang.
+Go 1.25 or later is required to build bonjour-reflector. Checkout https://golang.org/doc/install for instructions on how to install a recent version of Golang.
 
 To build the binary, run:
 

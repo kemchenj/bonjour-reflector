@@ -273,6 +273,9 @@ func emitForwardedMDNSEvents(sink *mdnsEventSink, bonjourPacket *bonjourPacket, 
 }
 
 func emitDebugMDNSEvents(sink *mdnsEventSink, bonjourPacket *bonjourPacket, sourcePool, targetPool uint16, stage, reason, sourceMAC string) {
+	if stage == "error" {
+		log.Printf("mDNS forwarding error vlan%d -> vlan%d source=%s: %s", sourcePool, targetPool, sourceMAC, reason)
+	}
 	if !sink.debugEnabled() || bonjourPacket == nil || bonjourPacket.dns == nil {
 		return
 	}
