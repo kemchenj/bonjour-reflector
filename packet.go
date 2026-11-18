@@ -121,8 +121,7 @@ func sendBonjourPacket(handle packetWriter, bonjourPacket *bonjourPacket, tag ui
 	}
 	*bonjourPacket.srcMAC = brMACAddress
 
-	// Network devices may set dstMAC to the local MAC address
-	// Rewrite dstMAC to ensure that it is set to the appropriate multicast MAC address
+	// 抓包过滤器只接收发往 mDNS 组播 IP 的报文，确保目的 MAC 与该 IP 匹配。
 	if bonjourPacket.isIPv6 {
 		*bonjourPacket.dstMAC = net.HardwareAddr{0x33, 0x33, 0x00, 0x00, 0x00, 0xFB}
 	} else {

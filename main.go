@@ -31,7 +31,7 @@ func (e egressInterface) WritePacketData(frame []byte) error {
 	return writeMDNSFrames(e.handle, frame, e.maxFrameLen)
 }
 
-const mdnsTrafficFilter = "udp dst port 5353"
+const mdnsTrafficFilter = "udp dst port 5353 and (ip dst host 224.0.0.251 or ip6 dst host ff02::fb)"
 
 func buildMDNSBPFFilter(localMACs []net.HardwareAddr, requireVLAN bool) string {
 	parts := []string{}
@@ -68,17 +68,20 @@ func main() {
 	logFilePath := flag.String("log-file", "", "Write logs to this file in addition to stderr, overwriting existing contents")
 	flag.Parse()
 
-	logFile := configureLogFile(*logFilePath)
+	cfg, err := readConfig(*configPath)
+	if err != nil {
+		log.Fatalf("Could not read configuration %q: %v", *configPath, err)
+	}
+	if err := cfg.validateAndNormalize(); err != nil {
+		log.Fatalf("Invalid configuration %q: %v", *configPath, err)
+	}
 
+	logFile := configureLogFile(*logFilePath)
 	// Start debug server
 	if *debug {
 		go debugServer(6060)
 	}
 
-	cfg, err := readConfig(*configPath)
-	if err != nil {
-		log.Fatalf("Could not read configuration: %v", err)
-	}
 	poolsMap := mapByPool(cfg.Devices)
 	mirrorPeers := buildMirrorPeers(cfg.MirrorGroups)
 	mdnsEvents := startMDNSSummaryLogger(30*time.Second, *mdnsDebug)
@@ -215,9 +218,6 @@ func runWithMappedInterfaces(cfg brconfig, poolsMap, mirrorPeers map[uint16][]ui
 		err = handle.SetBPFFilter(filter)
 		if err != nil {
 			log.Fatalf("Could not apply filter on network interface %v: %v", configuredInterface.Name, err)
-		}
-		if _, exists := interfacesByPool[configuredInterface.Pool]; exists {
-			log.Fatalf("Duplicate pool %d in interfaces config; each pool must map to exactly one interface", configuredInterface.Pool)
 		}
 		interfacesByPool[configuredInterface.Pool] = egressInterface{
 			handle:      handle,

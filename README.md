@@ -8,15 +8,15 @@ Compared to other tools such as [avahi-reflector](http://www.avahi.org/), Bonjou
 
 ## How it works
 
-Bonjour-reflector works by intercepting all mDNS traffic and rewriting layers 2 and 3 of the packets to reflect them across the appropriate VLANs.
+Bonjour-reflector reflects only mDNS packets addressed to `224.0.0.251:5353` (IPv4) or `[ff02::fb]:5353` (IPv6). It sets the destination MAC to match the multicast IP without changing that IP. Unicast mDNS is not reflected.
 
 Forwarded DNS messages omit all AAAA address records and remove AAAA from NSEC type bitmaps, while preserving NSEC itself and other records. This advertises only IPv4 addresses across VLANs without disabling IPv6 on the host or changing network settings.
 
 A configuration file lists, for each Bonjour device (defined by its MAC address), which VLANs should have access to this device. mDNS packets will only be forwarded if the configuration file says so.
 
-The interface on which Bonjour-reflector runs should be configured so that it receives each VLAN's traffic, tagged.
+In tagged mode, the capture interface must receive tagged traffic from each VLAN. In mapped mode, the ingress interface determines the pool instead of the packet's VLAN tag.
 
-In detail, here is what happens when Bonjour-reflector runs:
+In tagged mode, a discovery works like this:
 - a device searching for Bonjour devices sends mDNS packets on his VLAN.
 - bonjour-reflector receives these mDNS packets, tagged with the original VLAN.
 - bonjour-reflector looks up in its configuration to which VLANs it should forward the mDNS request, and send new packets tagged with these new VLANs.
@@ -38,9 +38,14 @@ On Linux-based distributions, you can do this by installing the development vers
 
 ## App setup
 
-First, indicate in the `config.toml` file which of your network interfaces you want to listen to.
+Choose how to identify pools in `config.toml`:
 
-Then run
+- **Mapped interfaces** (as in the example): set `interfaces` to entries such as `{ name = "en0", pool = 10 }`. Interface names and nonzero pool IDs must be unique. All pools referenced by `mirror_groups` and `devices` must be listed in `interfaces`.
+- **Tagged interface**: set `net_interface` and omit `interfaces`. Pool IDs are tagged VLAN IDs from 1 to 4094. If both are set, a nonempty `interfaces` list takes precedence.
+
+`mirror_groups` defines bidirectional forwarding between pools in each group. In `devices`, use a 6-byte MAC address as the key. MAC addresses are normalized at startup, so uppercase and lowercase spellings refer to the same device and cannot both be listed. `origin_pool` controls where queries for that device are forwarded; responses are matched by source MAC, not checked against `origin_pool`, and are forwarded to `shared_pools`.
+
+Invalid configuration stops startup before packet capture. To start the reflector, run
 
 ```
 ./bonjour-reflector -config=./config.toml
