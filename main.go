@@ -22,8 +22,13 @@ type ingressPacket struct {
 }
 
 type egressInterface struct {
-	handle *pcap.Handle
-	mac    net.HardwareAddr
+	handle      *pcap.Handle
+	mac         net.HardwareAddr
+	maxFrameLen int
+}
+
+func (e egressInterface) WritePacketData(frame []byte) error {
+	return writeMDNSFrames(e.handle, frame, e.maxFrameLen)
 }
 
 const mdnsTrafficFilter = "udp dst port 5353"
@@ -128,11 +133,33 @@ func debugServer(port int) {
 	}
 }
 
-func runWithTaggedInterface(cfg brconfig, poolsMap, mirrorPeers map[uint16][]uint16, mdnsEvents *mdnsEventSink) {
-	// Get a handle on the network interface
-	rawTraffic, err := pcap.OpenLive(cfg.NetInterface, 65536, true, time.Second)
+func openMDNSCapture(device string) (*pcap.Handle, error) {
+	capture, err := pcap.NewInactiveHandle(device)
 	if err != nil {
-		log.Fatalf("Could not find network interface: %v", cfg.NetInterface)
+		return nil, err
+	}
+	defer capture.CleanUp()
+
+	if err := capture.SetSnapLen(65536); err != nil {
+		return nil, err
+	}
+	if err := capture.SetPromisc(true); err != nil {
+		return nil, err
+	}
+	if err := capture.SetTimeout(time.Second); err != nil {
+		return nil, err
+	}
+	// 低流量时也立即交付 mDNS 查询和响应，不等待抓包缓冲。
+	if err := capture.SetImmediateMode(true); err != nil {
+		return nil, fmt.Errorf("enable immediate mode: %w", err)
+	}
+	return capture.Activate()
+}
+
+func runWithTaggedInterface(cfg brconfig, poolsMap, mirrorPeers map[uint16][]uint16, mdnsEvents *mdnsEventSink) {
+	rawTraffic, err := openMDNSCapture(cfg.NetInterface)
+	if err != nil {
+		log.Fatalf("Could not open capture on network interface %s: %v", cfg.NetInterface, err)
 	}
 
 	// Get the local MAC address, to filter out Bonjour packet generated locally
@@ -141,6 +168,8 @@ func runWithTaggedInterface(cfg brconfig, poolsMap, mirrorPeers map[uint16][]uin
 		log.Fatal(err)
 	}
 	brMACAddress := intf.HardwareAddr
+	// 接口 MTU 不包含以太网头及显式的 802.1Q 标签。
+	outgoing := egressInterface{rawTraffic, brMACAddress, intf.MTU + 14 + 4}
 
 	// Filter tagged bonjour traffic
 	filter := buildMDNSBPFFilter([]net.HardwareAddr{brMACAddress}, true)
@@ -162,7 +191,7 @@ func runWithTaggedInterface(cfg brconfig, poolsMap, mirrorPeers map[uint16][]uin
 		if bonjourPacket.vlanTag == nil {
 			continue
 		}
-		processPacket(cfg, poolsMap, mirrorPeers, *bonjourPacket.vlanTag, rawTraffic, brMACAddress, &bonjourPacket, mdnsEvents)
+		processPacket(cfg, poolsMap, mirrorPeers, *bonjourPacket.vlanTag, outgoing, &bonjourPacket, mdnsEvents)
 	}
 }
 
@@ -171,9 +200,9 @@ func runWithMappedInterfaces(cfg brconfig, poolsMap, mirrorPeers map[uint16][]ui
 	ingress := make(chan ingressPacket, 100)
 
 	for _, configuredInterface := range cfg.Interfaces {
-		handle, err := pcap.OpenLive(configuredInterface.Name, 65536, true, time.Second)
+		handle, err := openMDNSCapture(configuredInterface.Name)
 		if err != nil {
-			log.Fatalf("Could not find network interface: %v", configuredInterface.Name)
+			log.Fatalf("Could not open capture on network interface %s: %v", configuredInterface.Name, err)
 		}
 		intf, err := net.InterfaceByName(configuredInterface.Name)
 		if err != nil {
@@ -191,8 +220,9 @@ func runWithMappedInterfaces(cfg brconfig, poolsMap, mirrorPeers map[uint16][]ui
 			log.Fatalf("Duplicate pool %d in interfaces config; each pool must map to exactly one interface", configuredInterface.Pool)
 		}
 		interfacesByPool[configuredInterface.Pool] = egressInterface{
-			handle: handle,
-			mac:    intf.HardwareAddr,
+			handle:      handle,
+			mac:         intf.HardwareAddr,
+			maxFrameLen: intf.MTU + 14,
 		}
 
 		decoder := gopacket.DecodersByLayerName["Ethernet"]
@@ -215,8 +245,7 @@ func processPacket(
 	poolsMap map[uint16][]uint16,
 	mirrorPeers map[uint16][]uint16,
 	sourcePool uint16,
-	defaultHandle *pcap.Handle,
-	defaultMAC net.HardwareAddr,
+	outgoing egressInterface,
 	bonjourPacket *bonjourPacket,
 	mdnsEvents *mdnsEventSink,
 ) {
@@ -228,7 +257,7 @@ func processPacket(
 			emitDebugMDNSEvents(mdnsEvents, bonjourPacket, sourcePool, 0, "skip", "no_target_pool", sourceMAC)
 		}
 		for _, tag := range tags {
-			if err := sendBonjourPacket(defaultHandle, bonjourPacket, tag, defaultMAC); err == nil {
+			if err := sendBonjourPacket(outgoing, bonjourPacket, tag, outgoing.mac); err == nil {
 				emitForwardedMDNSEvents(mdnsEvents, bonjourPacket, sourcePool, tag, sourceMAC)
 			} else {
 				emitDebugMDNSEvents(mdnsEvents, bonjourPacket, sourcePool, tag, "error", "write_failed:"+err.Error(), sourceMAC)
@@ -247,7 +276,7 @@ func processPacket(
 		emitDebugMDNSEvents(mdnsEvents, bonjourPacket, sourcePool, 0, "skip", "no_target_pool", sourceMAC)
 	}
 	for _, tag := range tags {
-		if err := sendBonjourPacket(defaultHandle, bonjourPacket, tag, defaultMAC); err == nil {
+		if err := sendBonjourPacket(outgoing, bonjourPacket, tag, outgoing.mac); err == nil {
 			emitForwardedMDNSEvents(mdnsEvents, bonjourPacket, sourcePool, tag, sourceMAC)
 		} else {
 			emitDebugMDNSEvents(mdnsEvents, bonjourPacket, sourcePool, tag, "error", "write_failed:"+err.Error(), sourceMAC)
@@ -285,7 +314,7 @@ func processPacketWithPoolMap(
 			emitDebugMDNSEvents(mdnsEvents, bonjourPacket, sourcePool, targetPool, "skip", "missing_target_interface", sourceMAC)
 			continue
 		}
-		if err := sendBonjourPacket(outgoing.handle, bonjourPacket, targetPool, outgoing.mac); err == nil {
+		if err := sendBonjourPacket(outgoing, bonjourPacket, targetPool, outgoing.mac); err == nil {
 			emitForwardedMDNSEvents(mdnsEvents, bonjourPacket, sourcePool, targetPool, sourceMAC)
 		} else {
 			emitDebugMDNSEvents(mdnsEvents, bonjourPacket, sourcePool, targetPool, "error", "write_failed:"+err.Error(), sourceMAC)

@@ -203,6 +203,99 @@ func prepareDNSForForwarding(bonjourPacket *bonjourPacket) error {
 	return nil
 }
 
+func writeMDNSFrames(handle packetWriter, frame []byte, maxFrameLen int) error {
+	if len(frame) <= maxFrameLen {
+		if err := handle.WritePacketData(frame); err != nil {
+			return fmt.Errorf("write %d-byte frame (limit %d): %w", len(frame), maxFrameLen, err)
+		}
+		return nil
+	}
+
+	packet := gopacket.NewPacket(frame, layers.LayerTypeEthernet, gopacket.DecodeOptions{Lazy: true, NoCopy: true})
+	payload := parseUDPLayer(packet)
+	maxDNSLen := maxFrameLen - (len(frame) - len(payload))
+	var message dns.Msg
+	if err := message.Unpack(payload); err != nil {
+		return fmt.Errorf("decode %d-byte frame for splitting: %w", len(frame), err)
+	}
+	parts, err := splitMDNSMessage(message, maxDNSLen)
+	if err != nil {
+		return fmt.Errorf("split %d-byte frame (limit %d): %w", len(frame), maxFrameLen, err)
+	}
+
+	frames := make([][]byte, 0, len(parts))
+	for _, part := range parts {
+		buf := gopacket.NewSerializeBuffer()
+		if err := serializeBonjourPacketWithDNS(buf, &bonjourPacket{packet: packet, dnsPayload: part}); err != nil {
+			return err
+		}
+		if len(buf.Bytes()) > maxFrameLen {
+			return fmt.Errorf("split frame is %d bytes (limit %d)", len(buf.Bytes()), maxFrameLen)
+		}
+		frames = append(frames, buf.Bytes())
+	}
+	for i, part := range frames {
+		if err := handle.WritePacketData(part); err != nil {
+			return fmt.Errorf("write split frame %d/%d (%d bytes): %w", i+1, len(frames), len(part), err)
+		}
+	}
+	return nil
+}
+
+func splitMDNSMessage(message dns.Msg, maxDNSLen int) ([][]byte, error) {
+	part := dns.Msg{MsgHdr: message.MsgHdr, Compress: true}
+	if message.Response {
+		part.Truncated = false
+	}
+	base := part
+	part.Question = message.Question
+	sections := [][]dns.RR{message.Answer, message.Ns, message.Extra}
+	if !message.Response {
+		// Probe 记录和附加记录留在首包；后续查询包只带 Known Answers。
+		part.Ns, part.Extra = message.Ns, message.Extra
+		sections = sections[:1]
+	}
+
+	payload, err := part.Pack()
+	if err != nil {
+		return nil, err
+	}
+	if len(payload) > maxDNSLen {
+		return nil, fmt.Errorf("DNS questions and query metadata exceed %d-byte budget", maxDNSLen)
+	}
+
+	var parts [][]byte
+	for i, records := range sections {
+		section := []*[]dns.RR{&part.Answer, &part.Ns, &part.Extra}[i]
+		for _, record := range records {
+			*section = append(*section, record)
+			next, err := part.Pack()
+			if err != nil {
+				return nil, err
+			}
+			if len(next) > maxDNSLen {
+				if !message.Response {
+					// RFC 6762 §7.2：TC 表示还有后续的 Known Answers。
+					payload[2] |= 0x02
+				}
+				parts = append(parts, payload)
+				part = base
+				*section = []dns.RR{record}
+				next, err = part.Pack()
+				if err != nil {
+					return nil, err
+				}
+				if len(next) > maxDNSLen {
+					// shortcut: 单条记录过大时显式失败，有实际需求时再支持 IP 分片。
+					return nil, fmt.Errorf("single DNS record exceeds %d-byte budget", maxDNSLen)
+				}
+			}
+			payload = next
+		}
+	}
+	return append(parts, payload), nil
+}
+
 func serializeBonjourPacketWithDNS(buf gopacket.SerializeBuffer, bonjourPacket *bonjourPacket) error {
 	if bonjourPacket == nil {
 		return errors.New("cannot serialize nil Bonjour packet")
