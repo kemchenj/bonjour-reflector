@@ -20,44 +20,13 @@ type bonjourPacket struct {
 	dnsPayload []byte
 }
 
-func parsePacketsLazily(source *gopacket.PacketSource) chan bonjourPacket {
-	// Process packets, and forward Bonjour traffic to the returned channel
-
-	// Set decoding to Lazy
-	source.DecodeOptions = gopacket.DecodeOptions{Lazy: true}
-
-	packetChan := make(chan bonjourPacket, 100)
-
-	go func() {
-		defer close(packetChan)
-		for packet := range source.Packets() {
-			// Get source and destination mac addresses
-			srcMAC, dstMAC := parseEthernetLayer(packet)
-
-			// Check IP protocol version
-			isIPv6 := parseIPLayer(packet)
-
-			// Get UDP payload
-			payload := parseUDPLayer(packet)
-
-			dns, _, ok := parseDNSPayload(payload)
-			if !ok {
-				// Ignore malformed or non-DNS UDP payloads to avoid misrouting.
-				continue
-			}
-
-			// Pass on the packet for its next adventure
-			packetChan <- bonjourPacket{
-				packet: packet,
-				srcMAC: srcMAC,
-				dstMAC: dstMAC,
-				isIPv6: isIPv6,
-				dns:    dns,
-			}
-		}
-	}()
-
-	return packetChan
+func parseBonjourPacket(packet gopacket.Packet) (bonjourPacket, bool) {
+	dns, ok := parseDNSPayload(parseUDPLayer(packet))
+	if !ok {
+		return bonjourPacket{}, false
+	}
+	srcMAC, dstMAC := parseEthernetLayer(packet)
+	return bonjourPacket{packet: packet, srcMAC: srcMAC, dstMAC: dstMAC, isIPv6: parseIPLayer(packet), dns: dns}, true
 }
 
 func parseEthernetLayer(packet gopacket.Packet) (srcMAC, dstMAC *net.HardwareAddr) {
@@ -85,14 +54,10 @@ func parseUDPLayer(packet gopacket.Packet) (payload []byte) {
 	return
 }
 
-func parseDNSPayload(payload []byte) (dns *layers.DNS, isDNSQuery bool, ok bool) {
+func parseDNSPayload(payload []byte) (*layers.DNS, bool) {
 	packet := gopacket.NewPacket(payload, layers.LayerTypeDNS, gopacket.Default)
-	if parsedDNS := packet.Layer(layers.LayerTypeDNS); parsedDNS != nil {
-		dns = parsedDNS.(*layers.DNS)
-		isDNSQuery = !dns.QR
-		ok = true
-	}
-	return
+	dns, ok := packet.Layer(layers.LayerTypeDNS).(*layers.DNS)
+	return dns, ok
 }
 
 type packetWriter interface {
@@ -174,7 +139,7 @@ func prepareDNSForForwarding(bonjourPacket *bonjourPacket) error {
 	if err != nil {
 		return fmt.Errorf("encode DNS for forwarding: %w", err)
 	}
-	forwardedDNS, _, ok := parseDNSPayload(payload)
+	forwardedDNS, ok := parseDNSPayload(payload)
 	if !ok {
 		return errors.New("could not decode forwarded DNS for logging")
 	}

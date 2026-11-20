@@ -149,7 +149,12 @@ func openInterface(name string, events *mdnsEventSink) mdnsInterface {
 
 func forward(src, dst mdnsInterface, events *mdnsEventSink) {
 	source := gopacket.NewPacketSource(src.handle, gopacket.DecodersByLayerName["Ethernet"])
-	for packet := range parsePacketsLazily(source) {
+	source.DecodeOptions.Lazy = true
+	for raw := range source.Packets() {
+		packet, ok := parseBonjourPacket(raw)
+		if !ok {
+			continue
+		}
 		sourceMAC := hardwareAddrString(packet.srcMAC)
 		emitDebugMDNSEvents(events, &packet, src.name, "", "rx", "", sourceMAC)
 		if err := sendBonjourPacket(dst, &packet, dst.mac); err != nil {

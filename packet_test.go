@@ -1,11 +1,9 @@
 package main
 
 import (
-	"io"
 	"net"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -162,12 +160,8 @@ func TestParseDNSPayload(t *testing.T) {
 
 	questionPacketPayload := parseUDPLayer(questionPacket)
 
-	questionExpectedResult := true
-	questionDNS, questionComputedResult, questionOK := parseDNSPayload(questionPacketPayload)
-	if !reflect.DeepEqual(questionExpectedResult, questionComputedResult) || !questionOK {
-		t.Error("Error in parseDNSPayload() for DNS queries")
-	}
-	if questionDNS == nil || len(questionDNS.Questions) != 1 {
+	questionDNS, ok := parseDNSPayload(questionPacketPayload)
+	if !ok || questionDNS.QR || len(questionDNS.Questions) != 1 {
 		t.Error("Error in parseDNSPayload() for DNS queries: expected parsed DNS question")
 	}
 
@@ -175,88 +169,27 @@ func TestParseDNSPayload(t *testing.T) {
 
 	answerPacketPayload := parseUDPLayer(answerPacket)
 
-	answerExpectedResult := false
-	answerDNS, answerComputedResult, answerOK := parseDNSPayload(answerPacketPayload)
-	if !reflect.DeepEqual(answerExpectedResult, answerComputedResult) || !answerOK {
-		t.Error("Error in parseDNSPayload() for DNS answers")
-	}
-	if answerDNS == nil || len(answerDNS.Answers) != 1 {
+	answerDNS, ok := parseDNSPayload(answerPacketPayload)
+	if !ok || !answerDNS.QR || len(answerDNS.Answers) != 1 {
 		t.Error("Error in parseDNSPayload() for DNS answers: expected parsed DNS answer")
 	}
 }
 
 func TestParseDNSPayloadMalformed(t *testing.T) {
-	dns, computedResult, ok := parseDNSPayload([]byte{0x01, 0x02, 0x03})
+	dns, ok := parseDNSPayload([]byte{0x01, 0x02, 0x03})
 	if ok {
 		t.Error("Error in parseDNSPayload() for malformed payload: expected parse failure")
 	}
 	if dns != nil {
 		t.Error("Error in parseDNSPayload() for malformed payload: expected nil DNS")
 	}
-	if computedResult {
-		t.Error("Error in parseDNSPayload() for malformed payload: expected false query flag")
-	}
 }
 
-type dataSource struct {
-	sentPackets int
-	data        [][]byte
-}
-
-func (dataSource *dataSource) ReadPacketData() (data []byte, ci gopacket.CaptureInfo, err error) {
-	// Return one packet for each call.
-	// If all the expected packets have already been returned in the past, return an EOF error
-	// to end the reading of packets from this source.
-	if dataSource.sentPackets >= len(dataSource.data) {
-		return nil, ci, io.EOF
-	}
-	data = dataSource.data[dataSource.sentPackets]
-	ci = gopacket.CaptureInfo{
-		Timestamp:      time.Time{},
-		CaptureLength:  len(data),
-		Length:         ci.CaptureLength,
-		InterfaceIndex: 0,
-	}
-	dataSource.sentPackets++
-	return data, ci, nil
-}
-
-func createMockPacketSource() (packetSource *gopacket.PacketSource, packet gopacket.Packet) {
-	// send one legitimate packet
-	// Return the packetSource and the legitimate packet
-	data := [][]byte{
-		createMockmDNSPacket(true, true)}
-	dataSource := &dataSource{
-		sentPackets: 0,
-		data:        data,
-	}
-	decoder := gopacket.DecodersByLayerName["Ethernet"]
-	packetSource = gopacket.NewPacketSource(dataSource, decoder)
-	packet = gopacket.NewPacket(data[len(data)-1], decoder, gopacket.DecodeOptions{Lazy: true})
-	return
-}
-
-func areBonjourPacketsEqual(a, b bonjourPacket) (areEqual bool) {
-	areEqual = a.srcMAC.String() == b.srcMAC.String()
-	// While comparing Bonjour packets, we do not want to compare packets entirely.
-	// In particular, packet.metadata may be slightly different, we do not need them to be the same.
-	// So we only compare the layers part of the packets.
-	areEqual = areEqual && reflect.DeepEqual(a.packet.Layers(), b.packet.Layers())
-	return
-}
-
-func TestFilterBonjourPacketsLazily(t *testing.T) {
-	mockPacketSource, packet := createMockPacketSource()
-	packetChan := parsePacketsLazily(mockPacketSource)
-
-	expectedResult := bonjourPacket{
-		packet: packet,
-		srcMAC: &srcMACTest,
-	}
-
-	computedResult := <-packetChan
-	if !areBonjourPacketsEqual(expectedResult, computedResult) {
-		t.Error("Error in parsePacketsLazily()")
+func TestParseBonjourPacket(t *testing.T) {
+	packet := gopacket.NewPacket(createMockmDNSPacket(true, true), layers.LayerTypeEthernet, gopacket.DecodeOptions{Lazy: true})
+	got, ok := parseBonjourPacket(packet)
+	if !ok || got.packet != packet || !reflect.DeepEqual(got.srcMAC, &srcMACTest) {
+		t.Fatal("unexpected parsed Bonjour packet")
 	}
 }
 
@@ -321,7 +254,7 @@ func TestSendBonjourPacketClearsQuestionQUBit(t *testing.T) {
 	decoder := gopacket.DecodersByLayerName["Ethernet"]
 	initialPacket := gopacket.NewPacket(initialData, decoder, gopacket.DecodeOptions{Lazy: true})
 	srcMAC, dstMAC := parseEthernetLayer(initialPacket)
-	dnsLayer, _, ok := parseDNSPayload(parseUDPLayer(initialPacket))
+	dnsLayer, ok := parseDNSPayload(parseUDPLayer(initialPacket))
 	if !ok {
 		t.Fatal("parseDNSPayload() failed for QU query packet")
 	}
@@ -338,7 +271,7 @@ func TestSendBonjourPacketClearsQuestionQUBit(t *testing.T) {
 		t.Fatalf("sendBonjourPacket() returned error: %v", err)
 	}
 
-	outDNS, _, ok := parseDNSPayload(parseUDPLayer(pw.packet))
+	outDNS, ok := parseDNSPayload(parseUDPLayer(pw.packet))
 	if !ok {
 		t.Fatal("parseDNSPayload() failed for forwarded query packet")
 	}
@@ -355,7 +288,7 @@ func TestSendBonjourPacketClearsQuestionQUBit(t *testing.T) {
 	if err := sendBonjourPacket(pw, &bonjourTestPacket, brMACTest); err != nil {
 		t.Fatalf("second sendBonjourPacket() returned error: %v", err)
 	}
-	outDNS, _, ok = parseDNSPayload(parseUDPLayer(pw.packet))
+	outDNS, ok = parseDNSPayload(parseUDPLayer(pw.packet))
 	if !ok {
 		t.Fatal("parseDNSPayload() failed for second forwarded query packet")
 	}
