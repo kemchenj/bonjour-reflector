@@ -114,17 +114,17 @@ func forward(src, dst mdnsInterface, debug bool) {
 		sourceMAC := hardwareAddrString(packet.srcMAC)
 		ips := raw.NetworkLayer().NetworkFlow()
 		ports := raw.TransportLayer().TransportFlow()
-		endpoints := "src=" + net.JoinHostPort(ips.Src().String(), ports.Src().String()) +
-			" dst=" + net.JoinHostPort(ips.Dst().String(), ports.Dst().String())
-		logMDNS(debug, packet.dns, src.name, "", sourceMAC, endpoints)
+		srcAddr := net.JoinHostPort(ips.Src().String(), ports.Src().String())
+		dstAddr := net.JoinHostPort(ips.Dst().String(), ports.Dst().String())
+		logMDNS(debug, packet.dns, src.name, "", sourceMAC, srcAddr, dstAddr)
 		if err := sendBonjourPacket(dst.handle, &packet, dst.mac, dst.maxFrameLen); err != nil {
-			log.Printf("mDNS forwarding error %s -> %s %s src_mac=%s: %v", src.name, dst.name, endpoints, sourceMAC, err)
+			log.Printf("%s    mDNS forwarding error src_mac=%s: %v", mdnsLogPath(src.name, dst.name, srcAddr, dstAddr), sourceMAC, err)
 			continue
 		}
 		if debug && (packet.removedAAAA > 0 || packet.updatedNSEC > 0) {
-			log.Printf("%s -> %s rewrite removed_aaaa=%d updated_nsec=%d %s", src.name, dst.name, packet.removedAAAA, packet.updatedNSEC, endpoints)
+			log.Printf("%s    rewrite removed_aaaa=%d updated_nsec=%d", mdnsLogPath(src.name, dst.name, srcAddr, dstAddr), packet.removedAAAA, packet.updatedNSEC)
 		}
-		logMDNS(debug, packet.dns, src.name, dst.name, sourceMAC, endpoints)
+		logMDNS(debug, packet.dns, src.name, dst.name, sourceMAC, srcAddr, dstAddr)
 	}
 	log.Fatalf("Capture stopped on %s", src.name)
 }

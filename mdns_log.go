@@ -23,7 +23,14 @@ type mdnsLogEvent struct {
 	Details         string
 }
 
-func (event mdnsLogEvent) format(debug bool) string {
+func mdnsLogPath(src, dst, srcAddr, dstAddr string) string {
+	if dst == "" {
+		return fmt.Sprintf("%s rx (%s -> %s)", src, srcAddr, dstAddr)
+	}
+	return fmt.Sprintf("%s (%s) -> %s (%s)", src, srcAddr, dst, dstAddr)
+}
+
+func (event mdnsLogEvent) format(debug bool, srcAddr, dstAddr string) string {
 	record := fmt.Sprintf("%s %s %s", event.Kind, event.RecordType, event.Name)
 	if event.Value != "" {
 		record += " -> " + event.Value
@@ -34,18 +41,15 @@ func (event mdnsLogEvent) format(debug bool) string {
 	if debug && event.SrcMAC != "" {
 		record += " src_mac=" + event.SrcMAC
 	}
-	if event.TargetInterface == "" {
-		return fmt.Sprintf("%s rx %s", event.SourceInterface, record)
-	}
-	return fmt.Sprintf("%s -> %s %s", event.SourceInterface, event.TargetInterface, record)
+	return mdnsLogPath(event.SourceInterface, event.TargetInterface, srcAddr, dstAddr) + "    " + record
 }
 
-func logMDNS(debug bool, msg *dns.Msg, sourceInterface, targetInterface, sourceMAC, endpoints string) {
+func logMDNS(debug bool, msg *dns.Msg, sourceInterface, targetInterface, sourceMAC, srcAddr, dstAddr string) {
 	if targetInterface == "" && !debug {
 		return
 	}
 	for _, event := range mdnsEventsFromDNSWithDetails(msg, sourceInterface, targetInterface, sourceMAC, debug) {
-		log.Printf("%s %s", event.format(debug), endpoints)
+		log.Print(event.format(debug, srcAddr, dstAddr))
 	}
 }
 
