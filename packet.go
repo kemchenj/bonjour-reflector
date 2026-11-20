@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -16,7 +17,7 @@ type bonjourPacket struct {
 	srcMAC     *net.HardwareAddr
 	dstMAC     *net.HardwareAddr
 	isIPv6     bool
-	dns        *layers.DNS
+	dns        *dns.Msg
 	dnsPayload []byte
 }
 
@@ -37,14 +38,9 @@ func parseEthernetLayer(packet gopacket.Packet) (srcMAC, dstMAC *net.HardwareAdd
 	return
 }
 
-func parseIPLayer(packet gopacket.Packet) (isIPv6 bool) {
-	if parsedIP := packet.Layer(layers.LayerTypeIPv4); parsedIP != nil {
-		isIPv6 = false
-	}
-	if parsedIP := packet.Layer(layers.LayerTypeIPv6); parsedIP != nil {
-		isIPv6 = true
-	}
-	return
+func parseIPLayer(packet gopacket.Packet) bool {
+	_, ipv6 := packet.NetworkLayer().(*layers.IPv6)
+	return ipv6
 }
 
 func parseUDPLayer(packet gopacket.Packet) (payload []byte) {
@@ -54,17 +50,25 @@ func parseUDPLayer(packet gopacket.Packet) (payload []byte) {
 	return
 }
 
-func parseDNSPayload(payload []byte) (*layers.DNS, bool) {
-	packet := gopacket.NewPacket(payload, layers.LayerTypeDNS, gopacket.Default)
-	dns, ok := packet.Layer(layers.LayerTypeDNS).(*layers.DNS)
-	return dns, ok
+func parseDNSPayload(payload []byte) (*dns.Msg, bool) {
+	var msg dns.Msg
+	if err := msg.Unpack(payload); err != nil {
+		return nil, false
+	}
+	// Unpack 容许不完整的 section；不要把头部计数不符的报文转发出去。
+	for i, count := range []int{len(msg.Question), len(msg.Answer), len(msg.Ns), len(msg.Extra)} {
+		if int(binary.BigEndian.Uint16(payload[4+2*i:])) != count {
+			return nil, false
+		}
+	}
+	return &msg, true
 }
 
 type packetWriter interface {
 	WritePacketData([]byte) error
 }
 
-func sendBonjourPacket(handle packetWriter, bonjourPacket *bonjourPacket, brMACAddress net.HardwareAddr) error {
+func sendBonjourPacket(handle packetWriter, bonjourPacket *bonjourPacket, brMACAddress net.HardwareAddr, maxFrameLen int) error {
 	if err := prepareDNSForForwarding(bonjourPacket); err != nil {
 		return err
 	}
@@ -78,29 +82,33 @@ func sendBonjourPacket(handle packetWriter, bonjourPacket *bonjourPacket, brMACA
 		*bonjourPacket.dstMAC = net.HardwareAddr{0x01, 0x00, 0x5E, 0x00, 0x00, 0xFB}
 	}
 
-	buf := gopacket.NewSerializeBuffer()
-	if bonjourPacket.dnsPayload != nil {
-		if err := serializeBonjourPacketWithDNS(buf, bonjourPacket); err != nil {
+	var frame []byte
+	payload := bonjourPacket.dnsPayload
+	if payload == nil {
+		// 只替换以太网地址，保留原始 DNS 压缩指针和校验和。
+		frame = slices.Clone(bonjourPacket.packet.Data())
+		copy(frame[:6], *bonjourPacket.dstMAC)
+		copy(frame[6:12], brMACAddress)
+		payload = parseUDPLayer(bonjourPacket.packet)
+	} else {
+		buf := gopacket.NewSerializeBuffer()
+		if err := serializeBonjourPacketWithDNS(buf, bonjourPacket.packet, payload); err != nil {
 			return err
 		}
-	} else if err := gopacket.SerializePacket(buf, gopacket.SerializeOptions{}, bonjourPacket.packet); err != nil {
-		return err
+		frame = buf.Bytes()
 	}
-	return handle.WritePacketData(buf.Bytes())
+	return writeMDNSFrames(handle, bonjourPacket, frame, len(payload), maxFrameLen)
 }
 
 func prepareDNSForForwarding(bonjourPacket *bonjourPacket) error {
-	if bonjourPacket == nil || bonjourPacket.packet == nil {
+	if bonjourPacket == nil || bonjourPacket.packet == nil || bonjourPacket.dns == nil {
 		return errors.New("cannot prepare DNS without packet data")
 	}
 	if bonjourPacket.dnsPayload != nil {
 		return nil
 	}
 
-	var message dns.Msg
-	if err := message.Unpack(parseUDPLayer(bonjourPacket.packet)); err != nil {
-		return fmt.Errorf("decode DNS for forwarding: %w", err)
-	}
+	message := bonjourPacket.dns
 
 	changed := false
 	if !message.Response {
@@ -139,20 +147,11 @@ func prepareDNSForForwarding(bonjourPacket *bonjourPacket) error {
 	if err != nil {
 		return fmt.Errorf("encode DNS for forwarding: %w", err)
 	}
-	forwardedDNS, ok := parseDNSPayload(payload)
-	if !ok {
-		return errors.New("could not decode forwarded DNS for logging")
-	}
-	if bonjourPacket.dns == nil {
-		bonjourPacket.dns = forwardedDNS
-	} else {
-		*bonjourPacket.dns = *forwardedDNS
-	}
 	bonjourPacket.dnsPayload = payload
 	return nil
 }
 
-func writeMDNSFrames(handle packetWriter, frame []byte, maxFrameLen int) error {
+func writeMDNSFrames(handle packetWriter, packet *bonjourPacket, frame []byte, payloadLen, maxFrameLen int) error {
 	if len(frame) <= maxFrameLen {
 		if err := handle.WritePacketData(frame); err != nil {
 			return fmt.Errorf("write %d-byte frame (limit %d): %w", len(frame), maxFrameLen, err)
@@ -160,14 +159,8 @@ func writeMDNSFrames(handle packetWriter, frame []byte, maxFrameLen int) error {
 		return nil
 	}
 
-	packet := gopacket.NewPacket(frame, layers.LayerTypeEthernet, gopacket.DecodeOptions{Lazy: true, NoCopy: true})
-	payload := parseUDPLayer(packet)
-	maxDNSLen := maxFrameLen - (len(frame) - len(payload))
-	var message dns.Msg
-	if err := message.Unpack(payload); err != nil {
-		return fmt.Errorf("decode %d-byte frame for splitting: %w", len(frame), err)
-	}
-	parts, err := splitMDNSMessage(message, maxDNSLen)
+	maxDNSLen := maxFrameLen - (len(frame) - payloadLen)
+	parts, err := splitMDNSMessage(*packet.dns, maxDNSLen)
 	if err != nil {
 		return fmt.Errorf("split %d-byte frame (limit %d): %w", len(frame), maxFrameLen, err)
 	}
@@ -175,7 +168,7 @@ func writeMDNSFrames(handle packetWriter, frame []byte, maxFrameLen int) error {
 	frames := make([][]byte, 0, len(parts))
 	for _, part := range parts {
 		buf := gopacket.NewSerializeBuffer()
-		if err := serializeBonjourPacketWithDNS(buf, &bonjourPacket{packet: packet, dnsPayload: part}); err != nil {
+		if err := serializeBonjourPacketWithDNS(buf, packet.packet, part); err != nil {
 			return err
 		}
 		if len(buf.Bytes()) > maxFrameLen {
@@ -245,48 +238,22 @@ func splitMDNSMessage(message dns.Msg, maxDNSLen int) ([][]byte, error) {
 	return append(parts, payload), nil
 }
 
-func serializeBonjourPacketWithDNS(buf gopacket.SerializeBuffer, bonjourPacket *bonjourPacket) error {
-	if bonjourPacket == nil {
-		return errors.New("cannot serialize nil Bonjour packet")
+func serializeBonjourPacketWithDNS(buf gopacket.SerializeBuffer, packet gopacket.Packet, payload []byte) error {
+	eth, ok := packet.LinkLayer().(*layers.Ethernet)
+	if !ok {
+		return errors.New("cannot serialize without Ethernet layer")
 	}
-	if bonjourPacket.packet == nil {
-		return errors.New("cannot serialize Bonjour packet without packet data")
+	network := packet.NetworkLayer()
+	ip, ok := network.(gopacket.SerializableLayer)
+	if !ok {
+		return errors.New("cannot serialize without IP layer")
 	}
-	if bonjourPacket.dnsPayload == nil {
-		return gopacket.SerializePacket(buf, gopacket.SerializeOptions{}, bonjourPacket.packet)
+	udp, ok := packet.TransportLayer().(*layers.UDP)
+	if !ok {
+		return errors.New("cannot serialize without UDP layer")
 	}
-
-	serializableLayers := []gopacket.SerializableLayer{}
-	if ethLayer := bonjourPacket.packet.Layer(layers.LayerTypeEthernet); ethLayer != nil {
-		serializableLayers = append(serializableLayers, ethLayer.(*layers.Ethernet))
-	} else {
-		return gopacket.SerializePacket(buf, gopacket.SerializeOptions{}, bonjourPacket.packet)
+	if err := udp.SetNetworkLayerForChecksum(network); err != nil {
+		return err
 	}
-
-	var networkLayer gopacket.NetworkLayer
-	if ipv4Layer := bonjourPacket.packet.Layer(layers.LayerTypeIPv4); ipv4Layer != nil {
-		ipv4 := ipv4Layer.(*layers.IPv4)
-		networkLayer = ipv4
-		serializableLayers = append(serializableLayers, ipv4)
-	} else if ipv6Layer := bonjourPacket.packet.Layer(layers.LayerTypeIPv6); ipv6Layer != nil {
-		ipv6 := ipv6Layer.(*layers.IPv6)
-		networkLayer = ipv6
-		serializableLayers = append(serializableLayers, ipv6)
-	} else {
-		return gopacket.SerializePacket(buf, gopacket.SerializeOptions{}, bonjourPacket.packet)
-	}
-
-	udpLayer := bonjourPacket.packet.Layer(layers.LayerTypeUDP)
-	if udpLayer == nil {
-		return gopacket.SerializePacket(buf, gopacket.SerializeOptions{}, bonjourPacket.packet)
-	}
-	udp := udpLayer.(*layers.UDP)
-	if networkLayer != nil {
-		if err := udp.SetNetworkLayerForChecksum(networkLayer); err != nil {
-			return err
-		}
-	}
-	serializableLayers = append(serializableLayers, udp, gopacket.Payload(bonjourPacket.dnsPayload))
-
-	return gopacket.SerializeLayers(buf, gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}, serializableLayers...)
+	return gopacket.SerializeLayers(buf, gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}, eth, ip, udp, gopacket.Payload(payload))
 }

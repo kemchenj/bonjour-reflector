@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/gopacket/layers"
+	"github.com/miekg/dns"
 )
 
 const (
@@ -281,24 +281,24 @@ func emitDebugMDNSEvents(sink *mdnsEventSink, bonjourPacket *bonjourPacket, sour
 	}
 }
 
-func mdnsEventsFromDNS(dns *layers.DNS, sourceInterface, targetInterface string, sourceMAC string) []mdnsLogEvent {
-	return mdnsEventsFromDNSWithDetails(dns, sourceInterface, targetInterface, sourceMAC, false)
+func mdnsEventsFromDNS(msg *dns.Msg, sourceInterface, targetInterface string, sourceMAC string) []mdnsLogEvent {
+	return mdnsEventsFromDNSWithDetails(msg, sourceInterface, targetInterface, sourceMAC, false)
 }
 
-func mdnsEventsFromDNSWithDetails(dns *layers.DNS, sourceInterface, targetInterface string, sourceMAC string, includeDetails bool) []mdnsLogEvent {
-	if dns == nil {
+func mdnsEventsFromDNSWithDetails(msg *dns.Msg, sourceInterface, targetInterface string, sourceMAC string, includeDetails bool) []mdnsLogEvent {
+	if msg == nil {
 		return nil
 	}
 
-	if !dns.QR {
-		events := make([]mdnsLogEvent, 0, len(dns.Questions))
-		for _, question := range dns.Questions {
+	if !msg.Response {
+		events := make([]mdnsLogEvent, 0, len(msg.Question))
+		for _, question := range msg.Question {
 			events = append(events, mdnsLogEvent{
 				SourceInterface: sourceInterface,
 				TargetInterface: targetInterface,
 				SrcMAC:          sourceMAC,
 				Kind:            "query",
-				RecordType:      dnsTypeName(question.Type),
+				RecordType:      dnsTypeName(question.Qtype),
 				Name:            dnsName(question.Name),
 				Details:         mdnsQuestionDetails(question, includeDetails),
 			})
@@ -307,22 +307,23 @@ func mdnsEventsFromDNSWithDetails(dns *layers.DNS, sourceInterface, targetInterf
 	}
 
 	events := []mdnsLogEvent{}
-	events = appendMDNSRecordEvents(events, dns.Answers, sourceInterface, targetInterface, sourceMAC, includeDetails)
-	events = appendMDNSRecordEvents(events, dns.Authorities, sourceInterface, targetInterface, sourceMAC, includeDetails)
-	events = appendMDNSRecordEvents(events, dns.Additionals, sourceInterface, targetInterface, sourceMAC, includeDetails)
+	events = appendMDNSRecordEvents(events, msg.Answer, sourceInterface, targetInterface, sourceMAC, includeDetails)
+	events = appendMDNSRecordEvents(events, msg.Ns, sourceInterface, targetInterface, sourceMAC, includeDetails)
+	events = appendMDNSRecordEvents(events, msg.Extra, sourceInterface, targetInterface, sourceMAC, includeDetails)
 	return events
 }
 
-func appendMDNSRecordEvents(events []mdnsLogEvent, records []layers.DNSResourceRecord, sourceInterface, targetInterface string, sourceMAC string, includeDetails bool) []mdnsLogEvent {
+func appendMDNSRecordEvents(events []mdnsLogEvent, records []dns.RR, sourceInterface, targetInterface string, sourceMAC string, includeDetails bool) []mdnsLogEvent {
 	for _, record := range records {
-		recordType := dnsTypeName(record.Type)
+		header := record.Header()
+		recordType := dnsTypeName(header.Rrtype)
 		value, ok := dnsRecordValue(record)
 		if !ok {
 			continue
 		}
 
 		kind := "announce"
-		if record.TTL == 0 {
+		if header.Ttl == 0 {
 			kind = "goodbye"
 		}
 
@@ -332,105 +333,107 @@ func appendMDNSRecordEvents(events []mdnsLogEvent, records []layers.DNSResourceR
 			SrcMAC:          sourceMAC,
 			Kind:            kind,
 			RecordType:      recordType,
-			Name:            dnsName(record.Name),
+			Name:            dnsName(header.Name),
 			Value:           value,
-			Details:         mdnsRecordDetails(record, includeDetails),
+			Details:         mdnsRecordDetails(header, includeDetails),
 		})
 	}
 	return events
 }
 
-func mdnsQuestionDetails(question layers.DNSQuestion, includeDetails bool) string {
+func mdnsQuestionDetails(question dns.Question, includeDetails bool) string {
 	if !includeDetails {
 		return ""
 	}
 
 	responseMode := "QM"
-	if dnsClassHasFlagBit(question.Class) {
+	if dnsClassHasFlagBit(question.Qclass) {
 		responseMode = "QU"
 	}
-	return fmt.Sprintf("q=%s class=%s", responseMode, dnsClassName(question.Class))
+	return fmt.Sprintf("q=%s class=%s", responseMode, dnsClassName(question.Qclass))
 }
 
-func mdnsRecordDetails(record layers.DNSResourceRecord, includeDetails bool) string {
+func mdnsRecordDetails(record *dns.RR_Header, includeDetails bool) string {
 	if !includeDetails {
 		return ""
 	}
-	return fmt.Sprintf("ttl=%d cache_flush=%t class=%s", record.TTL, dnsClassHasFlagBit(record.Class), dnsClassName(record.Class))
+	return fmt.Sprintf("ttl=%d cache_flush=%t class=%s", record.Ttl, dnsClassHasFlagBit(record.Class), dnsClassName(record.Class))
 }
 
-func dnsRecordValue(record layers.DNSResourceRecord) (string, bool) {
-	switch record.Type {
-	case layers.DNSTypeA, layers.DNSTypeAAAA:
-		if len(record.IP) == 0 {
-			return "", false
+func dnsRecordValue(record dns.RR) (string, bool) {
+	switch r := record.(type) {
+	case *dns.A:
+		if len(r.A) > 0 {
+			return r.A.String(), true
 		}
-		return record.IP.String(), true
-	case layers.DNSTypePTR:
-		return dnsName(record.PTR), true
-	case layers.DNSTypeSRV:
-		return fmt.Sprintf("%s:%d", dnsName(record.SRV.Name), record.SRV.Port), true
-	case layers.DNSTypeTXT:
-		return summarizeTXT(record.TXTs), true
-	default:
-		return "", false
+	case *dns.AAAA:
+		if len(r.AAAA) > 0 {
+			return r.AAAA.String(), true
+		}
+	case *dns.PTR:
+		return dnsName(r.Ptr), true
+	case *dns.SRV:
+		return fmt.Sprintf("%s:%d", dnsName(r.Target), r.Port), true
+	case *dns.TXT:
+		return summarizeTXT(r.Txt), true
 	}
+	return "", false
 }
 
-func dnsTypeName(dnsType layers.DNSType) string {
+func dnsTypeName(dnsType uint16) string {
 	switch dnsType {
-	case layers.DNSTypeA:
+	case dns.TypeA:
 		return "A"
-	case layers.DNSTypeAAAA:
+	case dns.TypeAAAA:
 		return "AAAA"
-	case layers.DNSTypePTR:
+	case dns.TypePTR:
 		return "PTR"
-	case layers.DNSTypeSRV:
+	case dns.TypeSRV:
 		return "SRV"
-	case layers.DNSTypeTXT:
+	case dns.TypeTXT:
 		return "TXT"
 	default:
 		return fmt.Sprintf("TYPE%d", uint16(dnsType))
 	}
 }
 
-func dnsClassName(dnsClass layers.DNSClass) string {
-	baseClass := layers.DNSClass(uint16(dnsClass) &^ mdnsClassFlagBit)
-	switch baseClass {
-	case layers.DNSClassIN:
-		return "IN"
-	case layers.DNSClassCS:
-		return "CS"
-	case layers.DNSClassCH:
-		return "CH"
-	case layers.DNSClassHS:
-		return "HS"
-	case layers.DNSClassAny:
-		return "ANY"
-	default:
-		return fmt.Sprintf("CLASS%d", uint16(baseClass))
-	}
+func dnsClassName(class uint16) string {
+	return dns.Class(class &^ mdnsClassFlagBit).String()
 }
 
-func dnsClassHasFlagBit(dnsClass layers.DNSClass) bool {
-	return uint16(dnsClass)&mdnsClassFlagBit != 0
+func dnsClassHasFlagBit(class uint16) bool {
+	return class&mdnsClassFlagBit != 0
 }
 
-func dnsName(name []byte) string {
-	if len(name) == 0 {
+func dnsName(name string) string {
+	if name == "" || name == "." {
 		return "."
 	}
-	return string(name)
+	if !strings.Contains(name, "\\") {
+		return strings.TrimSuffix(name, ".")
+	}
+	// DNS 文本会转义空格和非 ASCII 字节；摘要继续显示原始设备名。
+	var wire [255]byte
+	n, err := dns.PackDomainName(name, wire[:], 0, nil, false)
+	if err != nil {
+		return name
+	}
+	var labels []string
+	for i := 0; i < n && wire[i] != 0; {
+		size := int(wire[i])
+		labels = append(labels, string(wire[i+1:i+1+size]))
+		i += 1 + size
+	}
+	return strings.Join(labels, ".")
 }
 
-func summarizeTXT(txts [][]byte) string {
+func summarizeTXT(txts []string) string {
 	if len(txts) == 0 {
 		return "keys=0"
 	}
 
 	keys := make([]string, 0, len(txts))
-	for _, txt := range txts {
-		key := string(txt)
+	for _, key := range txts {
 		if idx := strings.IndexByte(key, '='); idx >= 0 {
 			key = key[:idx]
 		}

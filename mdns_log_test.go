@@ -7,20 +7,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/gopacket/layers"
+	"github.com/miekg/dns"
 )
 
 func TestMDNSEventsFromDNSQuery(t *testing.T) {
-	dns := &layers.DNS{
-		Questions: []layers.DNSQuestion{
-			{
-				Name: []byte("_airplay._tcp.local"),
-				Type: layers.DNSTypePTR,
-			},
-		},
+	msg := &dns.Msg{
+		Question: []dns.Question{
+			{Name: "_airplay._tcp.local.", Qtype: dns.TypePTR}},
 	}
 
-	got := mdnsEventsFromDNS(dns, "en0", "en6", "aa:bb:cc:dd:ee:ff")
+	got := mdnsEventsFromDNS(msg, "en0", "en6", "aa:bb:cc:dd:ee:ff")
 	want := []mdnsLogEvent{
 		{
 			SourceInterface: "en0",
@@ -37,43 +33,19 @@ func TestMDNSEventsFromDNSQuery(t *testing.T) {
 }
 
 func TestMDNSEventsFromDNSResponse(t *testing.T) {
-	dns := &layers.DNS{
-		QR: true,
-		Answers: []layers.DNSResourceRecord{
-			{
-				Name:  []byte("_airplay._tcp.local"),
-				Type:  layers.DNSTypePTR,
-				TTL:   120,
-				PTR:   []byte("Living Room._airplay._tcp.local"),
-				Class: layers.DNSClassIN,
-			},
-			{
-				Name:  []byte("Living Room._airplay._tcp.local"),
-				Type:  layers.DNSTypeSRV,
-				TTL:   120,
-				SRV:   layers.DNSSRV{Port: 7000, Name: []byte("appletv.local")},
-				Class: layers.DNSClassIN,
-			},
-			{
-				Name:  []byte("appletv.local"),
-				Type:  layers.DNSTypeA,
-				TTL:   120,
-				IP:    net.IP{192, 168, 1, 23},
-				Class: layers.DNSClassIN,
-			},
+	msg := &dns.Msg{
+		MsgHdr: dns.MsgHdr{Response: true},
+		Answer: []dns.RR{
+			&dns.PTR{Hdr: dns.RR_Header{Name: "_airplay._tcp.local.", Rrtype: dns.TypePTR, Ttl: 120, Class: dns.ClassINET}, Ptr: "Living\\ Room._airplay._tcp.local."},
+			&dns.SRV{Hdr: dns.RR_Header{Name: "Living Room._airplay._tcp.local.", Rrtype: dns.TypeSRV, Ttl: 120, Class: dns.ClassINET}, Target: "appletv.local.", Port: 7000},
+			&dns.A{Hdr: dns.RR_Header{Name: "appletv.local.", Rrtype: dns.TypeA, Ttl: 120, Class: dns.ClassINET}, A: net.IP{192, 168, 1, 23}},
 		},
-		Additionals: []layers.DNSResourceRecord{
-			{
-				Name:  []byte("Living Room._airplay._tcp.local"),
-				Type:  layers.DNSTypeTXT,
-				TTL:   120,
-				TXTs:  [][]byte{[]byte("model=AppleTV"), []byte("flags")},
-				Class: layers.DNSClassIN,
-			},
+		Extra: []dns.RR{
+			&dns.TXT{Hdr: dns.RR_Header{Name: "Living Room._airplay._tcp.local.", Rrtype: dns.TypeTXT, Ttl: 120, Class: dns.ClassINET}, Txt: []string{"model=AppleTV", "flags"}},
 		},
 	}
 
-	got := mdnsEventsFromDNS(dns, "en6", "en0", "aa:bb:cc:dd:ee:ff")
+	got := mdnsEventsFromDNS(msg, "en6", "en0", "aa:bb:cc:dd:ee:ff")
 	want := []mdnsLogEvent{
 		{
 			SourceInterface: "en6",
@@ -118,54 +90,39 @@ func TestMDNSEventsFromDNSResponse(t *testing.T) {
 }
 
 func TestMDNSEventsFromDNSGoodbye(t *testing.T) {
-	dns := &layers.DNS{
-		QR: true,
-		Answers: []layers.DNSResourceRecord{
-			{
-				Name: []byte("old-speaker.local"),
-				Type: layers.DNSTypeA,
-				TTL:  0,
-				IP:   net.IP{192, 168, 1, 30},
-			},
+	msg := &dns.Msg{
+		MsgHdr: dns.MsgHdr{Response: true},
+		Answer: []dns.RR{
+			&dns.A{Hdr: dns.RR_Header{Name: "old-speaker.local.", Rrtype: dns.TypeA, Ttl: 0, Class: dns.ClassINET}, A: net.IP{192, 168, 1, 30}},
 		},
 	}
 
-	got := mdnsEventsFromDNS(dns, "en6", "en0", "aa:bb:cc:dd:ee:ff")
+	got := mdnsEventsFromDNS(msg, "en6", "en0", "aa:bb:cc:dd:ee:ff")
 	if len(got) != 1 || got[0].Kind != "goodbye" {
 		t.Fatalf("mdnsEventsFromDNS() = %#v, want one goodbye event", got)
 	}
 }
 
 func TestMDNSEventsFromDNSDetails(t *testing.T) {
-	dns := &layers.DNS{
-		Questions: []layers.DNSQuestion{
-			{
-				Name:  []byte("_airplay._tcp.local"),
-				Type:  layers.DNSTypePTR,
-				Class: layers.DNSClass(uint16(layers.DNSClassIN) | mdnsClassFlagBit),
-			},
+	msg := &dns.Msg{
+		Question: []dns.Question{
+			{Name: "_airplay._tcp.local.", Qtype: dns.TypePTR, Qclass: dns.ClassINET | mdnsClassFlagBit},
 		},
 	}
 
-	got := mdnsEventsFromDNSWithDetails(dns, "en0", "en6", "aa:bb:cc:dd:ee:ff", true)
+	got := mdnsEventsFromDNSWithDetails(msg, "en0", "en6", "aa:bb:cc:dd:ee:ff", true)
 	if len(got) != 1 || got[0].Details != "q=QU class=IN" {
 		t.Fatalf("mdnsEventsFromDNSWithDetails() = %#v, want QU query details", got)
 	}
 
-	dns = &layers.DNS{
-		QR: true,
-		Answers: []layers.DNSResourceRecord{
-			{
-				Name:  []byte("appletv.local"),
-				Type:  layers.DNSTypeA,
-				TTL:   120,
-				IP:    net.IP{192, 168, 1, 23},
-				Class: layers.DNSClass(uint16(layers.DNSClassIN) | mdnsClassFlagBit),
-			},
+	msg = &dns.Msg{
+		MsgHdr: dns.MsgHdr{Response: true},
+		Answer: []dns.RR{
+			&dns.A{Hdr: dns.RR_Header{Name: "appletv.local.", Rrtype: dns.TypeA, Ttl: 120, Class: dns.ClassINET | mdnsClassFlagBit}, A: net.IP{192, 168, 1, 23}},
 		},
 	}
 
-	got = mdnsEventsFromDNSWithDetails(dns, "en6", "en0", "aa:bb:cc:dd:ee:ff", true)
+	got = mdnsEventsFromDNSWithDetails(msg, "en6", "en0", "aa:bb:cc:dd:ee:ff", true)
 	if len(got) != 1 || got[0].Details != "ttl=120 cache_flush=true class=IN" {
 		t.Fatalf("mdnsEventsFromDNSWithDetails() = %#v, want cache-flush response details", got)
 	}
@@ -288,15 +245,11 @@ func TestMDNSLogAggregatorFlushDebugStages(t *testing.T) {
 }
 
 func TestEmitDebugMDNSEventsRequiresDebug(t *testing.T) {
-	dns := &layers.DNS{
-		Questions: []layers.DNSQuestion{
-			{
-				Name: []byte("_airplay._tcp.local"),
-				Type: layers.DNSTypePTR,
-			},
-		},
+	msg := &dns.Msg{
+		Question: []dns.Question{
+			{Name: "_airplay._tcp.local.", Qtype: dns.TypePTR}},
 	}
-	packet := &bonjourPacket{dns: dns}
+	packet := &bonjourPacket{dns: msg}
 
 	disabled := &mdnsEventSink{events: make(chan mdnsLogEvent, 1)}
 	emitDebugMDNSEvents(disabled, packet, "en0", "", "rx", "", "aa:bb:cc:dd:ee:ff")

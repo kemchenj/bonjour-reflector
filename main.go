@@ -22,10 +22,6 @@ type mdnsInterface struct {
 	maxFrameLen int
 }
 
-func (e mdnsInterface) WritePacketData(frame []byte) error {
-	return writeMDNSFrames(e.handle, frame, e.maxFrameLen)
-}
-
 const mdnsTrafficFilter = "udp dst port 5353 and (ip dst host 224.0.0.251 or ip6 dst host ff02::fb)"
 
 func buildMDNSBPFFilter(mac net.HardwareAddr) string {
@@ -157,7 +153,7 @@ func forward(src, dst mdnsInterface, events *mdnsEventSink) {
 		}
 		sourceMAC := hardwareAddrString(packet.srcMAC)
 		emitDebugMDNSEvents(events, &packet, src.name, "", "rx", "", sourceMAC)
-		if err := sendBonjourPacket(dst, &packet, dst.mac); err != nil {
+		if err := sendBonjourPacket(dst.handle, &packet, dst.mac, dst.maxFrameLen); err != nil {
 			emitDebugMDNSEvents(events, &packet, src.name, dst.name, "error", "write_failed:"+err.Error(), sourceMAC)
 			continue
 		}
