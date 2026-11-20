@@ -23,9 +23,19 @@ type mdnsLogEvent struct {
 	Details         string
 }
 
+func mdnsLogAddr(host, port string) string {
+	if port == "5353" {
+		return host
+	}
+	return net.JoinHostPort(host, port)
+}
+
 func mdnsLogPath(src, dst, srcAddr, dstAddr string) string {
 	if dst == "" {
 		return fmt.Sprintf("%s rx (%s -> %s)", src, srcAddr, dstAddr)
+	}
+	if dstAddr == "" {
+		return fmt.Sprintf("%s (%s) -> %s", src, srcAddr, dst)
 	}
 	return fmt.Sprintf("%s (%s) -> %s (%s)", src, srcAddr, dst, dstAddr)
 }

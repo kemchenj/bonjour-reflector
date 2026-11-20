@@ -68,7 +68,7 @@ A pprof server will listen on port `6060` if the you use the `-debug` flag.
 
 More information on pprof is available [here](https://golang.org/pkg/net/http/pprof/)
 
-Forwarded mDNS queries and service records are logged individually as they are forwarded, with the packet’s source and destination IP addresses and UDP ports. `-mdns-debug` also logs received records, source MACs and DNS details. When forwarding removes AAAA records or updates NSEC bitmaps, debug mode reports both counts once per forwarded packet. Logs are written synchronously, so a slow terminal or log file can delay processing the next packet.
+Forwarded mDNS queries and service records are logged individually as they are forwarded, with the source IP and forwarding direction. UDP port 5353 is implicit; other ports are shown. `-mdns-debug` also shows the multicast destination, received records, source MACs and DNS details. When forwarding removes AAAA records or updates NSEC bitmaps, debug mode reports both counts once per forwarded packet. Logs are written synchronously, so a slow terminal or log file can delay processing the next packet.
 
 To display and save mDNS diagnostics until you press Ctrl+C:
 

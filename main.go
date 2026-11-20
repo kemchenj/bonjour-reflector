@@ -114,8 +114,11 @@ func forward(src, dst mdnsInterface, debug bool) {
 		sourceMAC := hardwareAddrString(packet.srcMAC)
 		ips := raw.NetworkLayer().NetworkFlow()
 		ports := raw.TransportLayer().TransportFlow()
-		srcAddr := net.JoinHostPort(ips.Src().String(), ports.Src().String())
-		dstAddr := net.JoinHostPort(ips.Dst().String(), ports.Dst().String())
+		srcAddr := mdnsLogAddr(ips.Src().String(), ports.Src().String())
+		var dstAddr string
+		if debug {
+			dstAddr = mdnsLogAddr(ips.Dst().String(), ports.Dst().String())
+		}
 		logMDNS(debug, packet.dns, src.name, "", sourceMAC, srcAddr, dstAddr)
 		if err := sendBonjourPacket(dst.handle, &packet, dst.mac, dst.maxFrameLen); err != nil {
 			log.Printf("%s    mDNS forwarding error src_mac=%s: %v", mdnsLogPath(src.name, dst.name, srcAddr, dstAddr), sourceMAC, err)
