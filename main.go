@@ -121,6 +121,9 @@ func forward(src, dst mdnsInterface, debug bool) {
 			log.Printf("mDNS forwarding error %s -> %s %s src_mac=%s: %v", src.name, dst.name, endpoints, sourceMAC, err)
 			continue
 		}
+		if debug && (packet.removedAAAA > 0 || packet.updatedNSEC > 0) {
+			log.Printf("%s -> %s rewrite removed_aaaa=%d updated_nsec=%d %s", src.name, dst.name, packet.removedAAAA, packet.updatedNSEC, endpoints)
+		}
 		logMDNS(debug, packet.dns, src.name, dst.name, sourceMAC, endpoints)
 	}
 	log.Fatalf("Capture stopped on %s", src.name)

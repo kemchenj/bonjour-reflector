@@ -66,7 +66,7 @@ func mdnsEventsFromDNSWithDetails(msg *dns.Msg, sourceInterface, targetInterface
 				TargetInterface: targetInterface,
 				SrcMAC:          sourceMAC,
 				Kind:            "query",
-				RecordType:      dnsTypeName(question.Qtype),
+				RecordType:      dns.Type(question.Qtype).String(),
 				Name:            dnsName(question.Name),
 				Details:         mdnsQuestionDetails(question, includeDetails),
 			})
@@ -84,7 +84,6 @@ func mdnsEventsFromDNSWithDetails(msg *dns.Msg, sourceInterface, targetInterface
 func appendMDNSRecordEvents(events []mdnsLogEvent, records []dns.RR, sourceInterface, targetInterface string, sourceMAC string, includeDetails bool) []mdnsLogEvent {
 	for _, record := range records {
 		header := record.Header()
-		recordType := dnsTypeName(header.Rrtype)
 		value, ok := dnsRecordValue(record)
 		if !ok {
 			continue
@@ -100,7 +99,7 @@ func appendMDNSRecordEvents(events []mdnsLogEvent, records []dns.RR, sourceInter
 			TargetInterface: targetInterface,
 			SrcMAC:          sourceMAC,
 			Kind:            kind,
-			RecordType:      recordType,
+			RecordType:      dns.Type(header.Rrtype).String(),
 			Name:            dnsName(header.Name),
 			Value:           value,
 			Details:         mdnsRecordDetails(header, includeDetails),
@@ -146,23 +145,6 @@ func dnsRecordValue(record dns.RR) (string, bool) {
 		return summarizeTXT(r.Txt), true
 	}
 	return "", false
-}
-
-func dnsTypeName(dnsType uint16) string {
-	switch dnsType {
-	case dns.TypeA:
-		return "A"
-	case dns.TypeAAAA:
-		return "AAAA"
-	case dns.TypePTR:
-		return "PTR"
-	case dns.TypeSRV:
-		return "SRV"
-	case dns.TypeTXT:
-		return "TXT"
-	default:
-		return fmt.Sprintf("TYPE%d", uint16(dnsType))
-	}
 }
 
 func dnsClassName(class uint16) string {

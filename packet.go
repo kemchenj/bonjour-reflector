@@ -13,12 +13,14 @@ import (
 )
 
 type bonjourPacket struct {
-	packet     gopacket.Packet
-	srcMAC     *net.HardwareAddr
-	dstMAC     *net.HardwareAddr
-	isIPv6     bool
-	dns        *dns.Msg
-	dnsPayload []byte
+	packet      gopacket.Packet
+	srcMAC      *net.HardwareAddr
+	dstMAC      *net.HardwareAddr
+	isIPv6      bool
+	dns         *dns.Msg
+	dnsPayload  []byte
+	removedAAAA int
+	updatedNSEC int
 }
 
 func parseBonjourPacket(packet gopacket.Packet) (bonjourPacket, bool) {
@@ -123,6 +125,7 @@ func prepareDNSForForwarding(bonjourPacket *bonjourPacket) error {
 		kept := (*records)[:0]
 		for _, record := range *records {
 			if record.Header().Rrtype == dns.TypeAAAA {
+				bonjourPacket.removedAAAA++
 				changed = true
 				continue
 			}
@@ -131,7 +134,10 @@ func prepareDNSForForwarding(bonjourPacket *bonjourPacket) error {
 				nsec.TypeBitMap = slices.DeleteFunc(nsec.TypeBitMap, func(recordType uint16) bool {
 					return recordType == dns.TypeAAAA
 				})
-				changed = changed || len(nsec.TypeBitMap) != previousLen
+				if len(nsec.TypeBitMap) != previousLen {
+					bonjourPacket.updatedNSEC++
+					changed = true
+				}
 			}
 			kept = append(kept, record)
 		}
