@@ -31,7 +31,7 @@ func buildMDNSBPFFilter(mac net.HardwareAddr) string {
 func main() {
 	configPath := flag.String("config", "", "Config file in TOML format")
 	debug := flag.Bool("debug", false, "Enable pprof server on /debug/pprof/")
-	mdnsDebug := flag.Bool("mdns-debug", false, "Enable aggregated mDNS receive and forwarding diagnostics")
+	mdnsDebug := flag.Bool("mdns-debug", false, "Include received mDNS records, source MACs and DNS details in live logs")
 	runDuration := flag.Duration("run-duration", 0, "Run for this duration before flushing logs and exiting; 0 means run until stopped")
 	logFilePath := flag.String("log-file", "", "Write logs to this file in addition to stderr, overwriting existing contents")
 	flag.Parse()
@@ -47,13 +47,12 @@ func main() {
 		go debugServer(6060)
 	}
 
-	mdnsEvents := startMDNSSummaryLogger(30*time.Second, *mdnsDebug)
-	scheduleTimedExit(*runDuration, mdnsEvents, logFile)
+	scheduleTimedExit(*runDuration, logFile)
 
-	a := openInterface(names[0], mdnsEvents)
-	b := openInterface(names[1], mdnsEvents)
-	go forward(a, b, mdnsEvents)
-	forward(b, a, mdnsEvents)
+	a := openInterface(names[0], *mdnsDebug)
+	b := openInterface(names[1], *mdnsDebug)
+	go forward(a, b, *mdnsDebug)
+	forward(b, a, *mdnsDebug)
 }
 
 func configureLogFile(logFilePath string) *os.File {
@@ -70,7 +69,7 @@ func configureLogFile(logFilePath string) *os.File {
 	return logFile
 }
 
-func scheduleTimedExit(runDuration time.Duration, mdnsEvents *mdnsEventSink, logFile *os.File) {
+func scheduleTimedExit(runDuration time.Duration, logFile *os.File) {
 	if runDuration <= 0 {
 		return
 	}
@@ -78,7 +77,6 @@ func scheduleTimedExit(runDuration time.Duration, mdnsEvents *mdnsEventSink, log
 	go func() {
 		<-time.After(runDuration)
 		log.Printf("Run duration %s elapsed; flushing logs and exiting", runDuration)
-		mdnsEvents.stopAndFlush()
 		if logFile != nil {
 			if err := logFile.Sync(); err != nil {
 				log.Printf("Could not sync log file: %v", err)
@@ -121,7 +119,7 @@ func openMDNSCapture(device string) (*pcap.Handle, error) {
 	return capture.Activate()
 }
 
-func openInterface(name string, events *mdnsEventSink) mdnsInterface {
+func openInterface(name string, debug bool) mdnsInterface {
 	intf, err := net.InterfaceByName(name)
 	if err != nil {
 		log.Fatal(err)
@@ -137,13 +135,13 @@ func openInterface(name string, events *mdnsEventSink) mdnsInterface {
 	if err := handle.SetBPFFilter(filter); err != nil {
 		log.Fatalf("Could not apply filter on %s: %v", name, err)
 	}
-	if events.debugEnabled() {
+	if debug {
 		log.Printf("mdns debug interface=%s mac=%s filter=%q", name, intf.HardwareAddr, filter)
 	}
 	return mdnsInterface{name: name, handle: handle, mac: intf.HardwareAddr, maxFrameLen: intf.MTU + 14}
 }
 
-func forward(src, dst mdnsInterface, events *mdnsEventSink) {
+func forward(src, dst mdnsInterface, debug bool) {
 	source := gopacket.NewPacketSource(src.handle, gopacket.DecodersByLayerName["Ethernet"])
 	source.DecodeOptions.Lazy = true
 	for raw := range source.Packets() {
@@ -152,12 +150,12 @@ func forward(src, dst mdnsInterface, events *mdnsEventSink) {
 			continue
 		}
 		sourceMAC := hardwareAddrString(packet.srcMAC)
-		emitDebugMDNSEvents(events, &packet, src.name, "", "rx", "", sourceMAC)
+		logMDNS(debug, packet.dns, src.name, "", "rx", "", sourceMAC)
 		if err := sendBonjourPacket(dst.handle, &packet, dst.mac, dst.maxFrameLen); err != nil {
-			emitDebugMDNSEvents(events, &packet, src.name, dst.name, "error", "write_failed:"+err.Error(), sourceMAC)
+			logMDNS(debug, packet.dns, src.name, dst.name, "error", "write_failed:"+err.Error(), sourceMAC)
 			continue
 		}
-		emitForwardedMDNSEvents(events, &packet, src.name, dst.name, sourceMAC)
+		logMDNS(debug, packet.dns, src.name, dst.name, "forward", "", sourceMAC)
 	}
 	log.Fatalf("Capture stopped on %s", src.name)
 }
