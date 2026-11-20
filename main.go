@@ -3,12 +3,10 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
-	"os"
 	"time"
 
 	"github.com/google/gopacket"
@@ -32,8 +30,6 @@ func main() {
 	configPath := flag.String("config", "", "Config file in TOML format")
 	debug := flag.Bool("debug", false, "Enable pprof server on /debug/pprof/")
 	mdnsDebug := flag.Bool("mdns-debug", false, "Include received mDNS records, source MACs and DNS details in live logs")
-	runDuration := flag.Duration("run-duration", 0, "Run for this duration before flushing logs and exiting; 0 means run until stopped")
-	logFilePath := flag.String("log-file", "", "Write logs to this file in addition to stderr, overwriting existing contents")
 	flag.Parse()
 
 	names, err := readConfig(*configPath)
@@ -41,52 +37,15 @@ func main() {
 		log.Fatalf("Could not read configuration %q: %v", *configPath, err)
 	}
 
-	logFile := configureLogFile(*logFilePath)
 	// Start debug server
 	if *debug {
 		go debugServer(6060)
 	}
 
-	scheduleTimedExit(*runDuration, logFile)
-
 	a := openInterface(names[0], *mdnsDebug)
 	b := openInterface(names[1], *mdnsDebug)
 	go forward(a, b, *mdnsDebug)
 	forward(b, a, *mdnsDebug)
-}
-
-func configureLogFile(logFilePath string) *os.File {
-	if logFilePath == "" {
-		return nil
-	}
-
-	logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		log.Fatalf("Could not open log file %s: %v", logFilePath, err)
-	}
-	log.SetOutput(io.MultiWriter(os.Stderr, logFile))
-	log.Printf("Writing logs to %s", logFilePath)
-	return logFile
-}
-
-func scheduleTimedExit(runDuration time.Duration, logFile *os.File) {
-	if runDuration <= 0 {
-		return
-	}
-
-	go func() {
-		<-time.After(runDuration)
-		log.Printf("Run duration %s elapsed; flushing logs and exiting", runDuration)
-		if logFile != nil {
-			if err := logFile.Sync(); err != nil {
-				log.Printf("Could not sync log file: %v", err)
-			}
-			if err := logFile.Close(); err != nil {
-				log.Printf("Could not close log file: %v", err)
-			}
-		}
-		os.Exit(0)
-	}()
 }
 
 func debugServer(port int) {

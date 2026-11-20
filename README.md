@@ -70,10 +70,10 @@ More information on pprof is available [here](https://golang.org/pkg/net/http/pp
 
 Forwarded mDNS queries and service records are logged individually as they are forwarded, without a summary window. `-mdns-debug` also logs received records, source MACs and DNS details. Logs are written synchronously, so a slow terminal or log file can delay processing the next packet.
 
-To collect mDNS forwarding diagnostics for five minutes and save them to a file:
+To display and save mDNS diagnostics until you press Ctrl+C:
 
 ```
-./bonjour-reflector -config=./config.toml -mdns-debug -run-duration=5m -log-file=/tmp/bonjour-reflector-mdns.log
+./bonjour-reflector -config=./config.toml -mdns-debug 2>&1 | tee bonjour-reflector-mdns.log
 ```
 
 ## License
