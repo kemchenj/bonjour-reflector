@@ -46,6 +46,7 @@ func main() {
 
 	a := openInterface(names[0], *mdnsDebug)
 	b := openInterface(names[1], *mdnsDebug)
+	log.Printf("reflecting mDNS: %s <-> %s", a.name, b.name)
 	go forward(a, b, *mdnsDebug)
 	forward(b, a, *mdnsDebug)
 }
@@ -111,12 +112,12 @@ func forward(src, dst mdnsInterface, debug bool) {
 			continue
 		}
 		sourceMAC := hardwareAddrString(packet.srcMAC)
-		logMDNS(debug, packet.dns, src.name, "", "rx", "", sourceMAC)
+		logMDNS(debug, packet.dns, src.name, "", sourceMAC)
 		if err := sendBonjourPacket(dst.handle, &packet, dst.mac, dst.maxFrameLen); err != nil {
-			logMDNS(debug, packet.dns, src.name, dst.name, "error", "write_failed:"+err.Error(), sourceMAC)
+			log.Printf("mDNS forwarding error %s -> %s source=%s: %v", src.name, dst.name, sourceMAC, err)
 			continue
 		}
-		logMDNS(debug, packet.dns, src.name, dst.name, "forward", "", sourceMAC)
+		logMDNS(debug, packet.dns, src.name, dst.name, sourceMAC)
 	}
 	log.Fatalf("Capture stopped on %s", src.name)
 }

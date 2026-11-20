@@ -52,7 +52,7 @@ func TestMDNSEventsFromDNSResponse(t *testing.T) {
 			SourceInterface: "en6",
 			TargetInterface: "en0",
 			SrcMAC:          "aa:bb:cc:dd:ee:ff",
-			Kind:            "announce",
+			Kind:            "response",
 			RecordType:      "PTR",
 			Name:            "_airplay._tcp.local",
 			Value:           "Living Room._airplay._tcp.local",
@@ -61,7 +61,7 @@ func TestMDNSEventsFromDNSResponse(t *testing.T) {
 			SourceInterface: "en6",
 			TargetInterface: "en0",
 			SrcMAC:          "aa:bb:cc:dd:ee:ff",
-			Kind:            "announce",
+			Kind:            "response",
 			RecordType:      "SRV",
 			Name:            "Living Room._airplay._tcp.local",
 			Value:           "appletv.local:7000",
@@ -70,7 +70,7 @@ func TestMDNSEventsFromDNSResponse(t *testing.T) {
 			SourceInterface: "en6",
 			TargetInterface: "en0",
 			SrcMAC:          "aa:bb:cc:dd:ee:ff",
-			Kind:            "announce",
+			Kind:            "response",
 			RecordType:      "A",
 			Name:            "appletv.local",
 			Value:           "192.168.1.23",
@@ -79,7 +79,7 @@ func TestMDNSEventsFromDNSResponse(t *testing.T) {
 			SourceInterface: "en6",
 			TargetInterface: "en0",
 			SrcMAC:          "aa:bb:cc:dd:ee:ff",
-			Kind:            "announce",
+			Kind:            "response",
 			RecordType:      "TXT",
 			Name:            "Living Room._airplay._tcp.local",
 			Value:           "keys=flags,model",
@@ -130,17 +130,13 @@ func TestMDNSEventsFromDNSDetails(t *testing.T) {
 }
 
 func TestMDNSLogEventFormat(t *testing.T) {
-	event := mdnsLogEvent{SourceInterface: "en6", TargetInterface: "en0", SrcMAC: "aa:bb:cc:dd:ee:ff", Kind: "announce", RecordType: "A", Name: "appletv.local", Value: "192.168.1.23"}
-	if got := event.format(false); got != "en6 -> en0 announce A appletv.local -> 192.168.1.23" {
+	event := mdnsLogEvent{SourceInterface: "en6", TargetInterface: "en0", SrcMAC: "aa:bb:cc:dd:ee:ff", Kind: "response", RecordType: "A", Name: "appletv.local", Value: "192.168.1.23"}
+	if got := event.format(false); got != "en6 -> en0 response A appletv.local -> 192.168.1.23" {
 		t.Fatal(got)
 	}
-	event.Stage = "rx"
+	event.TargetInterface = ""
 	event.Details = "ttl=120"
-	if got := event.format(true); got != "en6 rx announce A appletv.local -> 192.168.1.23 ttl=120 source=aa:bb:cc:dd:ee:ff" {
-		t.Fatal(got)
-	}
-	event.Stage, event.Reason = "error", "write_failed:test"
-	if got := event.format(true); got != "en6 -> en0 error reason=write_failed:test announce A appletv.local -> 192.168.1.23 ttl=120 source=aa:bb:cc:dd:ee:ff" {
+	if got := event.format(true); got != "en6 rx response A appletv.local -> 192.168.1.23 ttl=120 source=aa:bb:cc:dd:ee:ff" {
 		t.Fatal(got)
 	}
 }
@@ -155,11 +151,11 @@ func TestLogMDNSReceiveRequiresDebug(t *testing.T) {
 	defer log.SetOutput(previous)
 	log.SetOutput(&output)
 
-	logMDNS(false, msg, "en0", "", "rx", "", "aa:bb:cc:dd:ee:ff")
+	logMDNS(false, msg, "en0", "", "aa:bb:cc:dd:ee:ff")
 	if output.Len() != 0 {
 		t.Fatal("unexpected receive log with debug disabled")
 	}
-	logMDNS(true, msg, "en0", "", "rx", "", "aa:bb:cc:dd:ee:ff")
+	logMDNS(true, msg, "en0", "", "aa:bb:cc:dd:ee:ff")
 	if !strings.Contains(output.String(), "en0 rx query PTR _airplay._tcp.local") {
 		t.Fatal(output.String())
 	}

@@ -16,8 +16,6 @@ type mdnsLogEvent struct {
 	SourceInterface string
 	TargetInterface string
 	SrcMAC          string
-	Stage           string
-	Reason          string
 	Kind            string
 	RecordType      string
 	Name            string
@@ -36,26 +34,17 @@ func (event mdnsLogEvent) format(debug bool) string {
 	if debug && event.SrcMAC != "" {
 		record += " source=" + event.SrcMAC
 	}
-	switch event.Stage {
-	case "rx":
+	if event.TargetInterface == "" {
 		return fmt.Sprintf("%s rx %s", event.SourceInterface, record)
-	case "error":
-		return fmt.Sprintf("%s -> %s error reason=%s %s", event.SourceInterface, event.TargetInterface, event.Reason, record)
-	default:
-		return fmt.Sprintf("%s -> %s %s", event.SourceInterface, event.TargetInterface, record)
 	}
+	return fmt.Sprintf("%s -> %s %s", event.SourceInterface, event.TargetInterface, record)
 }
 
-func logMDNS(debug bool, msg *dns.Msg, sourceInterface, targetInterface, stage, reason, sourceMAC string) {
-	if stage == "error" {
-		log.Printf("mDNS forwarding error %s -> %s source=%s: %s", sourceInterface, targetInterface, sourceMAC, reason)
-	}
-	if stage != "forward" && !debug {
+func logMDNS(debug bool, msg *dns.Msg, sourceInterface, targetInterface, sourceMAC string) {
+	if targetInterface == "" && !debug {
 		return
 	}
 	for _, event := range mdnsEventsFromDNSWithDetails(msg, sourceInterface, targetInterface, sourceMAC, debug) {
-		event.Stage = stage
-		event.Reason = reason
 		log.Print(event.format(debug))
 	}
 }
@@ -101,7 +90,7 @@ func appendMDNSRecordEvents(events []mdnsLogEvent, records []dns.RR, sourceInter
 			continue
 		}
 
-		kind := "announce"
+		kind := "response"
 		if header.Ttl == 0 {
 			kind = "goodbye"
 		}
