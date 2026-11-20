@@ -28,28 +28,28 @@ type mdnsEventSink struct {
 }
 
 type mdnsLogEvent struct {
-	SourcePool uint16
-	TargetPool uint16
-	SrcMAC     string
-	Stage      string
-	Reason     string
-	Kind       string
-	RecordType string
-	Name       string
-	Value      string
-	Details    string
+	SourceInterface string
+	TargetInterface string
+	SrcMAC          string
+	Stage           string
+	Reason          string
+	Kind            string
+	RecordType      string
+	Name            string
+	Value           string
+	Details         string
 }
 
 type mdnsLogKey struct {
-	sourcePool uint16
-	targetPool uint16
-	stage      string
-	reason     string
-	kind       string
-	recordType string
-	name       string
-	value      string
-	details    string
+	sourceInterface string
+	targetInterface string
+	stage           string
+	reason          string
+	kind            string
+	recordType      string
+	name            string
+	value           string
+	details         string
 }
 
 type mdnsLogBucket struct {
@@ -154,15 +154,15 @@ func (aggregator *mdnsLogAggregator) add(event mdnsLogEvent) {
 	}
 
 	key := mdnsLogKey{
-		sourcePool: event.SourcePool,
-		targetPool: event.TargetPool,
-		stage:      normalizeMDNSLogStage(event.Stage),
-		reason:     event.Reason,
-		kind:       event.Kind,
-		recordType: event.RecordType,
-		name:       event.Name,
-		value:      event.Value,
-		details:    event.Details,
+		sourceInterface: event.SourceInterface,
+		targetInterface: event.TargetInterface,
+		stage:           normalizeMDNSLogStage(event.Stage),
+		reason:          event.Reason,
+		kind:            event.Kind,
+		recordType:      event.RecordType,
+		name:            event.Name,
+		value:           event.Value,
+		details:         event.Details,
 	}
 	bucket := aggregator.events[key]
 	if bucket == nil {
@@ -207,14 +207,14 @@ func (aggregator *mdnsLogAggregator) flush(dropped uint64, logf func(string, ...
 }
 
 func compareMDNSLogKeys(a, b mdnsLogKey) int {
-	if a.sourcePool != b.sourcePool {
-		if a.sourcePool < b.sourcePool {
+	if a.sourceInterface != b.sourceInterface {
+		if a.sourceInterface < b.sourceInterface {
 			return -1
 		}
 		return 1
 	}
-	if a.targetPool != b.targetPool {
-		if a.targetPool < b.targetPool {
+	if a.targetInterface != b.targetInterface {
+		if a.targetInterface < b.targetInterface {
 			return -1
 		}
 		return 1
@@ -250,47 +250,42 @@ func formatMDNSLogKey(key mdnsLogKey) string {
 
 	switch key.stage {
 	case "rx":
-		return fmt.Sprintf("vlan%d rx %s", key.sourcePool, record)
-	case "skip":
-		if key.targetPool == 0 {
-			return fmt.Sprintf("vlan%d skip reason=%s %s", key.sourcePool, key.reason, record)
-		}
-		return fmt.Sprintf("vlan%d -> vlan%d skip reason=%s %s", key.sourcePool, key.targetPool, key.reason, record)
+		return fmt.Sprintf("%s rx %s", key.sourceInterface, record)
 	case "error":
-		return fmt.Sprintf("vlan%d -> vlan%d error reason=%s %s", key.sourcePool, key.targetPool, key.reason, record)
+		return fmt.Sprintf("%s -> %s error reason=%s %s", key.sourceInterface, key.targetInterface, key.reason, record)
 	default:
-		return fmt.Sprintf("vlan%d -> vlan%d %s", key.sourcePool, key.targetPool, record)
+		return fmt.Sprintf("%s -> %s %s", key.sourceInterface, key.targetInterface, record)
 	}
 }
 
-func emitForwardedMDNSEvents(sink *mdnsEventSink, bonjourPacket *bonjourPacket, sourcePool, targetPool uint16, sourceMAC string) {
+func emitForwardedMDNSEvents(sink *mdnsEventSink, bonjourPacket *bonjourPacket, sourceInterface, targetInterface string, sourceMAC string) {
 	if sink == nil || bonjourPacket == nil || bonjourPacket.dns == nil {
 		return
 	}
-	for _, event := range mdnsEventsFromDNSWithDetails(bonjourPacket.dns, sourcePool, targetPool, sourceMAC, sink.debugEnabled()) {
+	for _, event := range mdnsEventsFromDNSWithDetails(bonjourPacket.dns, sourceInterface, targetInterface, sourceMAC, sink.debugEnabled()) {
 		sink.emit(event)
 	}
 }
 
-func emitDebugMDNSEvents(sink *mdnsEventSink, bonjourPacket *bonjourPacket, sourcePool, targetPool uint16, stage, reason, sourceMAC string) {
+func emitDebugMDNSEvents(sink *mdnsEventSink, bonjourPacket *bonjourPacket, sourceInterface, targetInterface string, stage, reason, sourceMAC string) {
 	if stage == "error" {
-		log.Printf("mDNS forwarding error vlan%d -> vlan%d source=%s: %s", sourcePool, targetPool, sourceMAC, reason)
+		log.Printf("mDNS forwarding error %s -> %s source=%s: %s", sourceInterface, targetInterface, sourceMAC, reason)
 	}
 	if !sink.debugEnabled() || bonjourPacket == nil || bonjourPacket.dns == nil {
 		return
 	}
-	for _, event := range mdnsEventsFromDNSWithDetails(bonjourPacket.dns, sourcePool, targetPool, sourceMAC, true) {
+	for _, event := range mdnsEventsFromDNSWithDetails(bonjourPacket.dns, sourceInterface, targetInterface, sourceMAC, true) {
 		event.Stage = stage
 		event.Reason = reason
 		sink.emit(event)
 	}
 }
 
-func mdnsEventsFromDNS(dns *layers.DNS, sourcePool, targetPool uint16, sourceMAC string) []mdnsLogEvent {
-	return mdnsEventsFromDNSWithDetails(dns, sourcePool, targetPool, sourceMAC, false)
+func mdnsEventsFromDNS(dns *layers.DNS, sourceInterface, targetInterface string, sourceMAC string) []mdnsLogEvent {
+	return mdnsEventsFromDNSWithDetails(dns, sourceInterface, targetInterface, sourceMAC, false)
 }
 
-func mdnsEventsFromDNSWithDetails(dns *layers.DNS, sourcePool, targetPool uint16, sourceMAC string, includeDetails bool) []mdnsLogEvent {
+func mdnsEventsFromDNSWithDetails(dns *layers.DNS, sourceInterface, targetInterface string, sourceMAC string, includeDetails bool) []mdnsLogEvent {
 	if dns == nil {
 		return nil
 	}
@@ -299,26 +294,26 @@ func mdnsEventsFromDNSWithDetails(dns *layers.DNS, sourcePool, targetPool uint16
 		events := make([]mdnsLogEvent, 0, len(dns.Questions))
 		for _, question := range dns.Questions {
 			events = append(events, mdnsLogEvent{
-				SourcePool: sourcePool,
-				TargetPool: targetPool,
-				SrcMAC:     sourceMAC,
-				Kind:       "query",
-				RecordType: dnsTypeName(question.Type),
-				Name:       dnsName(question.Name),
-				Details:    mdnsQuestionDetails(question, includeDetails),
+				SourceInterface: sourceInterface,
+				TargetInterface: targetInterface,
+				SrcMAC:          sourceMAC,
+				Kind:            "query",
+				RecordType:      dnsTypeName(question.Type),
+				Name:            dnsName(question.Name),
+				Details:         mdnsQuestionDetails(question, includeDetails),
 			})
 		}
 		return events
 	}
 
 	events := []mdnsLogEvent{}
-	events = appendMDNSRecordEvents(events, dns.Answers, sourcePool, targetPool, sourceMAC, includeDetails)
-	events = appendMDNSRecordEvents(events, dns.Authorities, sourcePool, targetPool, sourceMAC, includeDetails)
-	events = appendMDNSRecordEvents(events, dns.Additionals, sourcePool, targetPool, sourceMAC, includeDetails)
+	events = appendMDNSRecordEvents(events, dns.Answers, sourceInterface, targetInterface, sourceMAC, includeDetails)
+	events = appendMDNSRecordEvents(events, dns.Authorities, sourceInterface, targetInterface, sourceMAC, includeDetails)
+	events = appendMDNSRecordEvents(events, dns.Additionals, sourceInterface, targetInterface, sourceMAC, includeDetails)
 	return events
 }
 
-func appendMDNSRecordEvents(events []mdnsLogEvent, records []layers.DNSResourceRecord, sourcePool, targetPool uint16, sourceMAC string, includeDetails bool) []mdnsLogEvent {
+func appendMDNSRecordEvents(events []mdnsLogEvent, records []layers.DNSResourceRecord, sourceInterface, targetInterface string, sourceMAC string, includeDetails bool) []mdnsLogEvent {
 	for _, record := range records {
 		recordType := dnsTypeName(record.Type)
 		value, ok := dnsRecordValue(record)
@@ -332,14 +327,14 @@ func appendMDNSRecordEvents(events []mdnsLogEvent, records []layers.DNSResourceR
 		}
 
 		events = append(events, mdnsLogEvent{
-			SourcePool: sourcePool,
-			TargetPool: targetPool,
-			SrcMAC:     sourceMAC,
-			Kind:       kind,
-			RecordType: recordType,
-			Name:       dnsName(record.Name),
-			Value:      value,
-			Details:    mdnsRecordDetails(record, includeDetails),
+			SourceInterface: sourceInterface,
+			TargetInterface: targetInterface,
+			SrcMAC:          sourceMAC,
+			Kind:            kind,
+			RecordType:      recordType,
+			Name:            dnsName(record.Name),
+			Value:           value,
+			Details:         mdnsRecordDetails(record, includeDetails),
 		})
 	}
 	return events

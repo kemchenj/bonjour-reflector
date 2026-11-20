@@ -2,9 +2,7 @@
 
 ## About this project
 
-Bonjour-reflector makes Bonjour devices such as printers, Chromecasts or Spotify Connect speakers, discoverable and usable by other devices located on different VLANs.
-
-Compared to other tools such as [avahi-reflector](http://www.avahi.org/), Bonjour-reflector allows a more fine-grained control of how Bonjour traffic is reflected across VLANs. 
+Bonjour-reflector makes Bonjour services discoverable between two Ethernet interfaces, for example across two VLANs. Service connections still require routing and firewall rules that allow them.
 
 ## How it works
 
@@ -12,16 +10,7 @@ Bonjour-reflector reflects only mDNS packets addressed to `224.0.0.251:5353` (IP
 
 Forwarded DNS messages omit all AAAA address records and remove AAAA from NSEC type bitmaps, while preserving NSEC itself and other records. This advertises only IPv4 addresses across VLANs without disabling IPv6 on the host or changing network settings.
 
-A configuration file lists, for each Bonjour device (defined by its MAC address), which VLANs should have access to this device. mDNS packets will only be forwarded if the configuration file says so.
-
-In tagged mode, the capture interface must receive tagged traffic from each VLAN. In mapped mode, the ingress interface determines the pool instead of the packet's VLAN tag.
-
-In tagged mode, a discovery works like this:
-- a device searching for Bonjour devices sends mDNS packets on his VLAN.
-- bonjour-reflector receives these mDNS packets, tagged with the original VLAN.
-- bonjour-reflector looks up in its configuration to which VLANs it should forward the mDNS request, and send new packets tagged with these new VLANs.
-- one Bonjour device receives the packet and sends a response which is also intercepted by bonjour-reflector.
-- bonjour-reflector reads the source MAC of the mDNS response, looks up in its configuration which VLANs are shared with this Bonjour device, and reflects the mDNS response on each of these VLANs.
+Queries and responses captured on either interface are forwarded to the other. Queries request multicast responses so that replies can be reflected back. The reflector uses the outgoing interface's source MAC and excludes its own frames from capture.
 
 ## Installation
 
@@ -38,12 +27,13 @@ On Linux-based distributions, you can do this by installing the development vers
 
 ## App setup
 
-Choose how to identify pools in `config.toml`:
+Set the two distinct interface names in `config.toml`:
 
-- **Mapped interfaces** (as in the example): set `interfaces` to entries such as `{ name = "en0", pool = 10 }`. Interface names and nonzero pool IDs must be unique. All pools referenced by `mirror_groups` and `devices` must be listed in `interfaces`.
-- **Tagged interface**: set `net_interface` and omit `interfaces`. Pool IDs are tagged VLAN IDs from 1 to 4094. If both are set, a nonempty `interfaces` list takes precedence.
+```toml
+interfaces = ["en0", "en6"]
+```
 
-`mirror_groups` defines bidirectional forwarding between pools in each group. In `devices`, use a 6-byte MAC address as the key. MAC addresses are normalized at startup, so uppercase and lowercase spellings refer to the same device and cannot both be listed. `origin_pool` controls where queries for that device are forwarded; responses are matched by source MAC, not checked against `origin_pool`, and are forwarded to `shared_pools`.
+Both interfaces must present untagged Ethernet frames to the reflector. Tagged trunk mode, pool IDs, mirror groups and per-device sharing are no longer supported. Old configurations are rejected: migrate only if all devices on both networks should be discoverable on the other.
 
 Invalid configuration stops startup before packet capture. To start the reflector, run
 

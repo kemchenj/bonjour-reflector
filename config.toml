@@ -1,5 +1,1 @@
-interfaces = [
-  { name = "en0", pool = 10 },
-  { name = "en6", pool = 1 },
-]
-mirror_groups = [ [1, 10] ]
+interfaces = ["en0", "en6"]

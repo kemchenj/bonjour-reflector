@@ -16,10 +16,8 @@ type bonjourPacket struct {
 	srcMAC     *net.HardwareAddr
 	dstMAC     *net.HardwareAddr
 	isIPv6     bool
-	vlanTag    *uint16
 	dns        *layers.DNS
 	dnsPayload []byte
-	isDNSQuery bool
 }
 
 func parsePacketsLazily(source *gopacket.PacketSource) chan bonjourPacket {
@@ -31,9 +29,8 @@ func parsePacketsLazily(source *gopacket.PacketSource) chan bonjourPacket {
 	packetChan := make(chan bonjourPacket, 100)
 
 	go func() {
+		defer close(packetChan)
 		for packet := range source.Packets() {
-			tag := parseVLANTag(packet)
-
 			// Get source and destination mac addresses
 			srcMAC, dstMAC := parseEthernetLayer(packet)
 
@@ -43,7 +40,7 @@ func parsePacketsLazily(source *gopacket.PacketSource) chan bonjourPacket {
 			// Get UDP payload
 			payload := parseUDPLayer(packet)
 
-			dns, isDNSQuery, ok := parseDNSPayload(payload)
+			dns, _, ok := parseDNSPayload(payload)
 			if !ok {
 				// Ignore malformed or non-DNS UDP payloads to avoid misrouting.
 				continue
@@ -51,13 +48,11 @@ func parsePacketsLazily(source *gopacket.PacketSource) chan bonjourPacket {
 
 			// Pass on the packet for its next adventure
 			packetChan <- bonjourPacket{
-				packet:     packet,
-				vlanTag:    tag,
-				srcMAC:     srcMAC,
-				dstMAC:     dstMAC,
-				isIPv6:     isIPv6,
-				isDNSQuery: isDNSQuery,
-				dns:        dns,
+				packet: packet,
+				srcMAC: srcMAC,
+				dstMAC: dstMAC,
+				isIPv6: isIPv6,
+				dns:    dns,
 			}
 		}
 	}()
@@ -69,13 +64,6 @@ func parseEthernetLayer(packet gopacket.Packet) (srcMAC, dstMAC *net.HardwareAdd
 	if parsedEth := packet.Layer(layers.LayerTypeEthernet); parsedEth != nil {
 		srcMAC = &parsedEth.(*layers.Ethernet).SrcMAC
 		dstMAC = &parsedEth.(*layers.Ethernet).DstMAC
-	}
-	return
-}
-
-func parseVLANTag(packet gopacket.Packet) (tag *uint16) {
-	if parsedTag := packet.Layer(layers.LayerTypeDot1Q); parsedTag != nil {
-		tag = &parsedTag.(*layers.Dot1Q).VLANIdentifier
 	}
 	return
 }
@@ -111,14 +99,11 @@ type packetWriter interface {
 	WritePacketData([]byte) error
 }
 
-func sendBonjourPacket(handle packetWriter, bonjourPacket *bonjourPacket, tag uint16, brMACAddress net.HardwareAddr) error {
+func sendBonjourPacket(handle packetWriter, bonjourPacket *bonjourPacket, brMACAddress net.HardwareAddr) error {
 	if err := prepareDNSForForwarding(bonjourPacket); err != nil {
 		return err
 	}
 
-	if bonjourPacket.vlanTag != nil {
-		*bonjourPacket.vlanTag = tag
-	}
 	*bonjourPacket.srcMAC = brMACAddress
 
 	// 抓包过滤器只接收发往 mDNS 组播 IP 的报文，确保目的 MAC 与该 IP 匹配。
@@ -311,9 +296,6 @@ func serializeBonjourPacketWithDNS(buf gopacket.SerializeBuffer, bonjourPacket *
 		serializableLayers = append(serializableLayers, ethLayer.(*layers.Ethernet))
 	} else {
 		return gopacket.SerializePacket(buf, gopacket.SerializeOptions{}, bonjourPacket.packet)
-	}
-	if vlanLayer := bonjourPacket.packet.Layer(layers.LayerTypeDot1Q); vlanLayer != nil {
-		serializableLayers = append(serializableLayers, vlanLayer.(*layers.Dot1Q))
 	}
 
 	var networkLayer gopacket.NetworkLayer
