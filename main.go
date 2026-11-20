@@ -27,7 +27,8 @@ func buildMDNSBPFFilter(mac net.HardwareAddr) string {
 }
 
 func main() {
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds | log.Lmsgprefix)
+	log.SetPrefix("   ")
 	configPath := flag.String("config", "", "Config file in TOML format")
 	debug := flag.Bool("debug", false, "Enable pprof server on /debug/pprof/")
 	mdnsDebug := flag.Bool("mdns-debug", false, "Include received mDNS records, source MACs and DNS details in live logs")
