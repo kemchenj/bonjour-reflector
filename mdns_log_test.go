@@ -136,7 +136,7 @@ func TestMDNSLogEventFormat(t *testing.T) {
 	}
 	event.TargetInterface = ""
 	event.Details = "ttl=120"
-	if got := event.format(true); got != "en6 rx response A appletv.local -> 192.168.1.23 ttl=120 source=aa:bb:cc:dd:ee:ff" {
+	if got := event.format(true); got != "en6 rx response A appletv.local -> 192.168.1.23 ttl=120 src_mac=aa:bb:cc:dd:ee:ff" {
 		t.Fatal(got)
 	}
 }
@@ -151,12 +151,12 @@ func TestLogMDNSReceiveRequiresDebug(t *testing.T) {
 	defer log.SetOutput(previous)
 	log.SetOutput(&output)
 
-	logMDNS(false, msg, "en0", "", "aa:bb:cc:dd:ee:ff")
+	logMDNS(false, msg, "en0", "", "aa:bb:cc:dd:ee:ff", "src=192.168.1.23:5353 dst=224.0.0.251:5353")
 	if output.Len() != 0 {
 		t.Fatal("unexpected receive log with debug disabled")
 	}
-	logMDNS(true, msg, "en0", "", "aa:bb:cc:dd:ee:ff")
-	if !strings.Contains(output.String(), "en0 rx query PTR _airplay._tcp.local") {
+	logMDNS(true, msg, "en0", "", "aa:bb:cc:dd:ee:ff", "src=192.168.1.23:5353 dst=224.0.0.251:5353")
+	if !strings.Contains(output.String(), "en0 rx query PTR _airplay._tcp.local") || !strings.Contains(output.String(), "src=192.168.1.23:5353 dst=224.0.0.251:5353") {
 		t.Fatal(output.String())
 	}
 }

@@ -112,12 +112,16 @@ func forward(src, dst mdnsInterface, debug bool) {
 			continue
 		}
 		sourceMAC := hardwareAddrString(packet.srcMAC)
-		logMDNS(debug, packet.dns, src.name, "", sourceMAC)
+		ips := raw.NetworkLayer().NetworkFlow()
+		ports := raw.TransportLayer().TransportFlow()
+		endpoints := "src=" + net.JoinHostPort(ips.Src().String(), ports.Src().String()) +
+			" dst=" + net.JoinHostPort(ips.Dst().String(), ports.Dst().String())
+		logMDNS(debug, packet.dns, src.name, "", sourceMAC, endpoints)
 		if err := sendBonjourPacket(dst.handle, &packet, dst.mac, dst.maxFrameLen); err != nil {
-			log.Printf("mDNS forwarding error %s -> %s source=%s: %v", src.name, dst.name, sourceMAC, err)
+			log.Printf("mDNS forwarding error %s -> %s %s src_mac=%s: %v", src.name, dst.name, endpoints, sourceMAC, err)
 			continue
 		}
-		logMDNS(debug, packet.dns, src.name, dst.name, sourceMAC)
+		logMDNS(debug, packet.dns, src.name, dst.name, sourceMAC, endpoints)
 	}
 	log.Fatalf("Capture stopped on %s", src.name)
 }

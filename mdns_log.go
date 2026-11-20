@@ -32,7 +32,7 @@ func (event mdnsLogEvent) format(debug bool) string {
 		record += " " + event.Details
 	}
 	if debug && event.SrcMAC != "" {
-		record += " source=" + event.SrcMAC
+		record += " src_mac=" + event.SrcMAC
 	}
 	if event.TargetInterface == "" {
 		return fmt.Sprintf("%s rx %s", event.SourceInterface, record)
@@ -40,12 +40,12 @@ func (event mdnsLogEvent) format(debug bool) string {
 	return fmt.Sprintf("%s -> %s %s", event.SourceInterface, event.TargetInterface, record)
 }
 
-func logMDNS(debug bool, msg *dns.Msg, sourceInterface, targetInterface, sourceMAC string) {
+func logMDNS(debug bool, msg *dns.Msg, sourceInterface, targetInterface, sourceMAC, endpoints string) {
 	if targetInterface == "" && !debug {
 		return
 	}
 	for _, event := range mdnsEventsFromDNSWithDetails(msg, sourceInterface, targetInterface, sourceMAC, debug) {
-		log.Print(event.format(debug))
+		log.Printf("%s %s", event.format(debug), endpoints)
 	}
 }
 
